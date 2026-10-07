@@ -390,6 +390,33 @@ internal connections when retrieving streams from separate endpoints.</p></td>
 in subsequent internal connections used for retrieving streams
 from separate endpoints.</p></td>
 </tr>
+<tr class="row-even"><td><p>disableServerPreparedStatements</p></td>
+<td><p>false</p></td>
+<td><p>Do not prepare any statement on the server. The driver writes the
+parameter values into the SQL text instead. See
+<a class="reference internal" href="#flight-sql-jdbc-client-side-statements"><span class="std std-ref">Client-Side Prepared Statements</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>disableServerPreparedQueries</p></td>
+<td><p>false</p></td>
+<td><p>Like <code class="docutils literal notranslate"><span class="pre">disableServerPreparedStatements</span></code>, but only for queries.
+Updates with parameters are still prepared on the server. Implied by
+<code class="docutils literal notranslate"><span class="pre">disableServerPreparedStatements</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p>dialect</p></td>
+<td><p>ansi</p></td>
+<td><p>The name of the SQL dialect used to write parameter values into the
+SQL text. Only used for client-side statements.</p></td>
+</tr>
+<tr class="row-odd"><td><p>dialectClass</p></td>
+<td><p>null</p></td>
+<td><p>The fully qualified name of a <code class="docutils literal notranslate"><span class="pre">SqlDialect</span></code> class to use instead of
+looking one up by name.</p></td>
+</tr>
+<tr class="row-even"><td><p>clientSideMetadataProbe</p></td>
+<td><p>true</p></td>
+<td><p>Whether the result set metadata of a client-side query may be fetched
+from the server before the query runs.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -411,6 +438,230 @@ Properties object. When calling the <a class="reference external" href="https://
 DriverManager#getConnection()</a>,
 the username and password supplied on the URI supercede the username and
 password arguments to the function call.</p>
+</section>
+<section id="client-side-prepared-statements">
+<span id="flight-sql-jdbc-client-side-statements"></span><h2>Client-Side Prepared Statements<a class="headerlink" href="#client-side-prepared-statements" title="Link to this heading">¶</a></h2>
+<p>By default a <code class="docutils literal notranslate"><span class="pre">PreparedStatement</span></code> is prepared on the server, and its
+parameters are sent separately from the SQL text.  Some Flight SQL
+services cannot do that: they accept a statement, but cannot prepare it or
+bind parameters.  For those, the driver can keep the <code class="docutils literal notranslate"><span class="pre">PreparedStatement</span></code>
+API and do the binding itself, by replacing each <code class="docutils literal notranslate"><span class="pre">?</span></code> with the value
+written as a SQL literal.  The server then receives an ordinary statement.</p>
+<p>Two properties choose which statements are handled this way:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">disableServerPreparedStatements=true</span></code>: no statement is prepared on
+the server.  This also applies to a plain <code class="docutils literal notranslate"><span class="pre">Statement</span></code>, which is sent to
+the server exactly as written, so a <code class="docutils literal notranslate"><span class="pre">?</span></code> in it is just a character.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">disableServerPreparedQueries=true</span></code>: only queries are handled by the
+driver.  Statements that change data or schema are still prepared on the
+server.  The driver decides which is which by the first keyword of the
+statement: <code class="docutils literal notranslate"><span class="pre">SELECT</span></code>, <code class="docutils literal notranslate"><span class="pre">WITH</span></code>, <code class="docutils literal notranslate"><span class="pre">VALUES</span></code>, <code class="docutils literal notranslate"><span class="pre">SHOW</span></code>, <code class="docutils literal notranslate"><span class="pre">DESCRIBE</span></code>,
+<code class="docutils literal notranslate"><span class="pre">DESC</span></code>, <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code> and <code class="docutils literal notranslate"><span class="pre">TABLE</span></code> start a query, and anything else is an
+update.  A dialect can change this rule.</p></li>
+</ul>
+<div class="highlight-java notranslate"><div class="highlight"><pre><span></span><span class="n">Properties</span><span class="w"> </span><span class="n">properties</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">Properties</span><span class="p">();</span>
+<span class="n">properties</span><span class="p">.</span><span class="na">put</span><span class="p">(</span><span class="s">"disableServerPreparedStatements"</span><span class="p">,</span><span class="w"> </span><span class="s">"true"</span><span class="p">);</span>
+<span class="k">try</span><span class="w"> </span><span class="p">(</span><span class="n">Connection</span><span class="w"> </span><span class="n">connection</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DriverManager</span><span class="p">.</span><span class="na">getConnection</span><span class="p">(</span>
+<span class="w">         </span><span class="s">"jdbc:arrow-flight-sql://localhost:12345/?useEncryption=0"</span><span class="p">,</span><span class="w"> </span><span class="n">properties</span><span class="p">);</span>
+<span class="w">     </span><span class="n">PreparedStatement</span><span class="w"> </span><span class="n">statement</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">connection</span><span class="p">.</span><span class="na">prepareStatement</span><span class="p">(</span>
+<span class="w">         </span><span class="s">"SELECT id FROM orders WHERE customer = ? AND placed &gt; ?"</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">statement</span><span class="p">.</span><span class="na">setString</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="s">"O'Brien"</span><span class="p">);</span>
+<span class="w">  </span><span class="n">statement</span><span class="p">.</span><span class="na">setObject</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">LocalDate</span><span class="p">.</span><span class="na">of</span><span class="p">(</span><span class="mi">2024</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">31</span><span class="p">));</span>
+<span class="w">  </span><span class="c1">// The server receives:</span>
+<span class="w">  </span><span class="c1">//   SELECT id FROM orders WHERE customer = 'O''Brien' AND placed &gt; DATE '2024-01-31'</span>
+<span class="w">  </span><span class="k">try</span><span class="w"> </span><span class="p">(</span><span class="n">ResultSet</span><span class="w"> </span><span class="n">resultSet</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">statement</span><span class="p">.</span><span class="na">executeQuery</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="p">...</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<section id="how-parameters-are-written">
+<h3>How parameters are written<a class="headerlink" href="#how-parameters-are-written" title="Link to this heading">¶</a></h3>
+<p>A <code class="docutils literal notranslate"><span class="pre">?</span></code> is a parameter unless it is inside a string literal, a quoted
+identifier or a comment.  The values are written by the <em>dialect</em>, which is
+ANSI SQL unless the <code class="docutils literal notranslate"><span class="pre">dialect</span></code> property says otherwise:</p>
+<div class="table-wrapper docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Java value</p></th>
+<th class="head"><p>ANSI SQL</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">NULL</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">String</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">'it''s'</span></code>, or <code class="docutils literal notranslate"><span class="pre">N'...'</span></code> after <code class="docutils literal notranslate"><span class="pre">setNString</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">boolean</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">TRUE</span></code> / <code class="docutils literal notranslate"><span class="pre">FALSE</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>integers, <code class="docutils literal notranslate"><span class="pre">BigInteger</span></code>, <code class="docutils literal notranslate"><span class="pre">BigDecimal</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">42</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">float</span></code>, <code class="docutils literal notranslate"><span class="pre">double</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.5</span></code>, <code class="docutils literal notranslate"><span class="pre">1.0E10</span></code>.  NaN and the infinities are rejected.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">byte[]</span></code>, <code class="docutils literal notranslate"><span class="pre">Blob</span></code>, binary streams</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">X'0A1B'</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Clob</span></code>, <code class="docutils literal notranslate"><span class="pre">Reader</span></code>, character streams</p></td>
+<td><p>a string literal</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">java.sql.Date</span></code>, <code class="docutils literal notranslate"><span class="pre">LocalDate</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DATE</span> <span class="pre">'2024-01-31'</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">java.sql.Time</span></code>, <code class="docutils literal notranslate"><span class="pre">LocalTime</span></code>, <code class="docutils literal notranslate"><span class="pre">OffsetTime</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">TIME</span> <span class="pre">'10:15:30'</span></code>, <code class="docutils literal notranslate"><span class="pre">TIME</span> <span class="pre">WITH</span> <span class="pre">TIME</span> <span class="pre">ZONE</span> <span class="pre">'10:15:30+02:00'</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">java.sql.Timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">LocalDateTime</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span> <span class="pre">'2024-01-31</span> <span class="pre">10:15:30.5'</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">OffsetDateTime</span></code>, <code class="docutils literal notranslate"><span class="pre">ZonedDateTime</span></code>, <code class="docutils literal notranslate"><span class="pre">Instant</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span> <span class="pre">WITH</span> <span class="pre">TIME</span> <span class="pre">ZONE</span> <span class="pre">'2024-01-31</span> <span class="pre">10:15:30+02:00'</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Duration</span></code>, <code class="docutils literal notranslate"><span class="pre">Period</span></code>, Arrow <code class="docutils literal notranslate"><span class="pre">PeriodDuration</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">INTERVAL</span> <span class="pre">'1-2'</span> <span class="pre">YEAR</span> <span class="pre">TO</span> <span class="pre">MONTH</span></code> or
+<code class="docutils literal notranslate"><span class="pre">INTERVAL</span> <span class="pre">'3</span> <span class="pre">04:05:06.789'</span> <span class="pre">DAY</span> <span class="pre">TO</span> <span class="pre">SECOND</span></code>.  ANSI SQL cannot mix
+months with days or time in one literal.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">UUID</span></code></p></td>
+<td><p>a string literal</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">java.sql.Array</span></code>, Java arrays, collections</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ARRAY[1,</span> <span class="pre">2]</span></code>, or <code class="docutils literal notranslate"><span class="pre">CAST(ARRAY[]</span> <span class="pre">AS</span> <span class="pre">INTEGER</span> <span class="pre">ARRAY)</span></code> when empty</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">java.sql.Struct</span></code>, <code class="docutils literal notranslate"><span class="pre">SQLData</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ROW(1,</span> <span class="pre">'a')</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Besides <code class="docutils literal notranslate"><span class="pre">setObject</span></code>, statements handled by the driver accept the types
+that Avatica rejects in server-prepared statements: <code class="docutils literal notranslate"><span class="pre">java.time</span></code> values,
+<code class="docutils literal notranslate"><span class="pre">UUID</span></code>, <code class="docutils literal notranslate"><span class="pre">BigInteger</span></code>, arrays, intervals, and the LOB and stream setters.
+A value the dialect cannot write is reported by the setter, or when the
+statement runs for values such as NaN.  The driver never falls back to
+<code class="docutils literal notranslate"><span class="pre">toString()</span></code>.</p>
+<p>Negative numbers are written in parentheses, so that <code class="docutils literal notranslate"><span class="pre">1-?</span></code> with <code class="docutils literal notranslate"><span class="pre">-5</span></code>
+cannot become the comment <code class="docutils literal notranslate"><span class="pre">1--5</span></code>.</p>
+<section id="dates-and-times">
+<h4>Dates and times<a class="headerlink" href="#dates-and-times" title="Link to this heading">¶</a></h4>
+<p>Following JDBC 4.2, <code class="docutils literal notranslate"><span class="pre">java.sql.Date</span></code>, <code class="docutils literal notranslate"><span class="pre">Time</span></code>, <code class="docutils literal notranslate"><span class="pre">Timestamp</span></code> and
+<code class="docutils literal notranslate"><span class="pre">java.util.Date</span></code> values keep all their precision, nanoseconds included.
+They are written as the wall-clock value in the time zone of the
+<code class="docutils literal notranslate"><span class="pre">Calendar</span></code> passed to <code class="docutils literal notranslate"><span class="pre">setDate</span></code>, <code class="docutils literal notranslate"><span class="pre">setTime</span></code> or <code class="docutils literal notranslate"><span class="pre">setTimestamp</span></code>, or in
+the default time zone of the JVM if there is none.  The <code class="docutils literal notranslate"><span class="pre">timeZone</span></code>
+connection property does not apply to them.  The same value gives the same
+literal as a lone parameter and inside an array or a struct.</p>
+<p><code class="docutils literal notranslate"><span class="pre">setObject(index,</span> <span class="pre">value,</span> <span class="pre">targetSqlType)</span></code> converts the value to a
+<code class="docutils literal notranslate"><span class="pre">DATE</span></code>, <code class="docutils literal notranslate"><span class="pre">TIME</span></code>, <code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span></code>, <code class="docutils literal notranslate"><span class="pre">TIME_WITH_TIMEZONE</span></code> or
+<code class="docutils literal notranslate"><span class="pre">TIMESTAMP_WITH_TIMEZONE</span></code> target as table B-5 of the JDBC 4.2
+specification describes.  For example, a <code class="docutils literal notranslate"><span class="pre">LocalDateTime</span></code> can be set as
+<code class="docutils literal notranslate"><span class="pre">Types.DATE</span></code>, and a <code class="docutils literal notranslate"><span class="pre">String</span></code> such as <code class="docutils literal notranslate"><span class="pre">2024-01-31</span></code> as <code class="docutils literal notranslate"><span class="pre">Types.DATE</span></code>.
+A conversion that is not in the table is reported by the setter with a
+<code class="docutils literal notranslate"><span class="pre">SQLFeatureNotSupportedException</span></code>.  A date or time value set with a
+<code class="docutils literal notranslate"><span class="pre">CHAR</span></code>, <code class="docutils literal notranslate"><span class="pre">VARCHAR</span></code> or <code class="docutils literal notranslate"><span class="pre">LONGVARCHAR</span></code> target is written as ISO text.</p>
+<p>ANSI SQL has no seconds in a time zone offset, so a value with such an
+offset, such as the <code class="docutils literal notranslate"><span class="pre">-00:14:44</span></code> of <code class="docutils literal notranslate"><span class="pre">Europe/Madrid</span></code> before 1901, is
+written in UTC, which is the same instant.</p>
+</section>
+</section>
+<section id="limitations">
+<h3>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>The statement text is different for every set of values, so the server
+cannot reuse a plan, and values appear in its logs.  The driver does not
+log them above DEBUG level.</p></li>
+<li><p>A parameter that was never set is written as <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">setNull</span></code> loses its SQL type, so a null is written as plain <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.
+A <code class="docutils literal notranslate"><span class="pre">null</span></code> inside an array is typed when the array declares its element
+type.</p></li>
+<li><p>A <code class="docutils literal notranslate"><span class="pre">Struct</span></code> has no field names in JDBC, so it is written as a positional
+row.</p></li>
+<li><p>Streams and LOBs are read when set, and are limited to 16 MiB.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">{fn</span> <span class="pre">...}</span></code> and <code class="docutils literal notranslate"><span class="pre">{call</span> <span class="pre">...}</span></code> escapes are not translated.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">executeBatch</span></code> runs one statement per row of parameters.</p></li>
+</ul>
+</section>
+<section id="result-set-metadata">
+<h3>Result set metadata<a class="headerlink" href="#result-set-metadata" title="Link to this heading">¶</a></h3>
+<p>A server-prepared statement knows its result columns before it runs.  A
+client-side query does not, so the first call to
+<code class="docutils literal notranslate"><span class="pre">PreparedStatement#getMetaData()</span></code> asks the server for the schema: the
+driver sends the statement with every <code class="docutils literal notranslate"><span class="pre">?</span></code> replaced by <code class="docutils literal notranslate"><span class="pre">NULL</span></code> and reads
+the schema from the reply, without fetching any rows.  This happens once per
+statement, and never for updates.  If it fails, the metadata has no columns
+and nothing is reported.  Once the query has run, the metadata comes from the
+results.</p>
+<p>Replacing a <code class="docutils literal notranslate"><span class="pre">?</span></code> with <code class="docutils literal notranslate"><span class="pre">NULL</span></code> can change what the server infers: <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">?</span></code>
+has no type, for example.  Some services also do real work when asked for the
+schema.  Set <code class="docutils literal notranslate"><span class="pre">clientSideMetadataProbe=false</span></code> to turn this off.
+<code class="docutils literal notranslate"><span class="pre">ParameterMetaData</span></code> always reports unknown parameter types.</p>
+</section>
+<section id="writing-a-dialect">
+<h3>Writing a dialect<a class="headerlink" href="#writing-a-dialect" title="Link to this heading">¶</a></h3>
+<p>A dialect implements <code class="docutils literal notranslate"><span class="pre">org.apache.arrow.driver.jdbc.dialect.SqlDialect</span></code>.
+Every method but <code class="docutils literal notranslate"><span class="pre">name()</span></code> has an ANSI default, so a dialect only overrides
+what its database does differently:</p>
+<div class="highlight-java notranslate"><div class="highlight"><pre><span></span><span class="kn">package</span><span class="w"> </span><span class="nn">com.example</span><span class="p">;</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">java.sql.SQLException</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">org.apache.arrow.driver.jdbc.dialect.SqlDialect</span><span class="p">;</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">org.apache.arrow.driver.jdbc.dialect.SqlLexicalRules</span><span class="p">;</span>
+
+<span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">MyDbDialect</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">SqlDialect</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nd">@Override</span>
+<span class="w">  </span><span class="kd">public</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="nf">name</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="s">"mydb"</span><span class="p">;</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="c1">// How to find the ? markers: this database lets a backslash escape a quote.</span>
+<span class="w">  </span><span class="nd">@Override</span>
+<span class="w">  </span><span class="kd">public</span><span class="w"> </span><span class="n">SqlLexicalRules</span><span class="w"> </span><span class="nf">lexicalRules</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">SqlLexicalRules</span><span class="p">.</span><span class="na">builder</span><span class="p">().</span><span class="na">backslashEscapesInStrings</span><span class="p">(</span><span class="kc">true</span><span class="p">).</span><span class="na">build</span><span class="p">();</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="nd">@Override</span>
+<span class="w">  </span><span class="kd">public</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="nf">formatBoolean</span><span class="p">(</span><span class="kt">boolean</span><span class="w"> </span><span class="n">value</span><span class="p">)</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">SQLException</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">value</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="s">"1"</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="s">"0"</span><span class="p">;</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="nd">@Override</span>
+<span class="w">  </span><span class="kd">public</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="nf">formatString</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">value</span><span class="p">,</span><span class="w"> </span><span class="kt">boolean</span><span class="w"> </span><span class="n">national</span><span class="p">)</span><span class="w"> </span><span class="kd">throws</span><span class="w"> </span><span class="n">SQLException</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="s">"'"</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">value</span><span class="p">.</span><span class="na">replace</span><span class="p">(</span><span class="s">"\\"</span><span class="p">,</span><span class="w"> </span><span class="s">"\\\\"</span><span class="p">).</span><span class="na">replace</span><span class="p">(</span><span class="s">"'"</span><span class="p">,</span><span class="w"> </span><span class="s">"\\'"</span><span class="p">)</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="s">"'"</span><span class="p">;</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Values reach the dialect as a small typed model in
+<code class="docutils literal notranslate"><span class="pre">org.apache.arrow.driver.jdbc.dialect.value</span></code> (<code class="docutils literal notranslate"><span class="pre">SqlScalar</span></code>, <code class="docutils literal notranslate"><span class="pre">SqlNull</span></code>,
+<code class="docutils literal notranslate"><span class="pre">SqlArray</span></code>, <code class="docutils literal notranslate"><span class="pre">SqlRow</span></code> and <code class="docutils literal notranslate"><span class="pre">SqlIntervalValue</span></code>), never as JDBC or Avatica
+objects.  <code class="docutils literal notranslate"><span class="pre">render(SqlValue)</span></code> is the entry point, and arrays and rows render
+their elements through it, so an override applies at every level.  A
+dialect can also override <code class="docutils literal notranslate"><span class="pre">classify(String)</span></code> to decide what is a query and
+<code class="docutils literal notranslate"><span class="pre">metadataProbeSql(ScannedSql)</span></code> to change the metadata probe.</p>
+<p>The default <code class="docutils literal notranslate"><span class="pre">formatString</span></code> doubles the quotes of a string.  It also doubles
+the backslashes when <code class="docutils literal notranslate"><span class="pre">lexicalRules()</span></code> says that a backslash is an escape,
+so a value can never end its literal early.  A dialect that overrides
+<code class="docutils literal notranslate"><span class="pre">formatString</span></code>, as the one above does, has to keep that guarantee itself.</p>
+<p>The driver finds dialects with <code class="docutils literal notranslate"><span class="pre">java.util.ServiceLoader</span></code>.  List the class
+in <code class="docutils literal notranslate"><span class="pre">META-INF/services/org.apache.arrow.driver.jdbc.dialect.SqlDialect</span></code> in
+the jar that contains it, and put that jar on the classpath:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>com.example.MyDbDialect
+</pre></div>
+</div>
+<p>Then select it with <code class="docutils literal notranslate"><span class="pre">dialect=mydb</span></code>.  Names are not case-sensitive.  If two
+dialects have the same name, the one with the higher <code class="docutils literal notranslate"><span class="pre">priority()</span></code> wins, and
+equal priorities are an error.  A class that cannot be loaded is skipped with a
+warning.</p>
+<p>Where service files are not visible, for example in some application servers,
+name the class directly with <code class="docutils literal notranslate"><span class="pre">dialectClass=com.example.MyDbDialect</span></code>.</p>
+<p>The dialect classes are the same in <code class="docutils literal notranslate"><span class="pre">flight-sql-jdbc-driver</span></code>, which is
+shaded: they are not relocated, so a dialect compiles and runs against either
+artifact.</p>
+</section>
 </section>
 <section id="oauth-2-0-authentication">
 <h2>OAuth 2.0 Authentication<a class="headerlink" href="#oauth-2-0-authentication" title="Link to this heading">¶</a></h2>
@@ -600,6 +851,16 @@ optional for <code class="docutils literal notranslate"><span class="pre">token_
 <li><a class="reference internal" href="#">Arrow Flight SQL JDBC Driver</a><ul>
 <li><a class="reference internal" href="#installation-and-requirements">Installation and Requirements</a></li>
 <li><a class="reference internal" href="#connecting-to-a-database">Connecting to a Database</a></li>
+<li><a class="reference internal" href="#client-side-prepared-statements">Client-Side Prepared Statements</a><ul>
+<li><a class="reference internal" href="#how-parameters-are-written">How parameters are written</a><ul>
+<li><a class="reference internal" href="#dates-and-times">Dates and times</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#limitations">Limitations</a></li>
+<li><a class="reference internal" href="#result-set-metadata">Result set metadata</a></li>
+<li><a class="reference internal" href="#writing-a-dialect">Writing a dialect</a></li>
+</ul>
+</li>
 <li><a class="reference internal" href="#oauth-2-0-authentication">OAuth 2.0 Authentication</a><ul>
 <li><a class="reference internal" href="#oauth-connection-properties">OAuth Connection Properties</a></li>
 </ul>
