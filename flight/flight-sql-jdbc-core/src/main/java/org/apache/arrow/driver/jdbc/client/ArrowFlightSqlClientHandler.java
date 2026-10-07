@@ -267,6 +267,16 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
     return sqlClient.execute(query, getOptions());
   }
 
+  /**
+   * Makes an RPC "doPut" request that runs an update statement, without preparing it on the server.
+   *
+   * @param query The update statement.
+   * @return the number of rows affected.
+   */
+  public long executeUpdate(final String query) {
+    return sqlClient.executeUpdate(query, getOptions());
+  }
+
   @Override
   public void close() throws SQLException {
     if (catalog.isPresent()) {
