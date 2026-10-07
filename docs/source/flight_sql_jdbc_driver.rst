@@ -151,6 +151,33 @@ case-sensitive. The supported parameters are:
        in subsequent internal connections used for retrieving streams
        from separate endpoints.
 
+   * - disableServerPreparedStatements
+     - false
+     - Do not prepare any statement on the server. The driver writes the
+       parameter values into the SQL text instead. See
+       :ref:`flight-sql-jdbc-client-side-statements`.
+
+   * - disableServerPreparedQueries
+     - false
+     - Like ``disableServerPreparedStatements``, but only for queries.
+       Updates with parameters are still prepared on the server. Implied by
+       ``disableServerPreparedStatements``.
+
+   * - dialect
+     - ansi
+     - The name of the SQL dialect used to write parameter values into the
+       SQL text. Only used for client-side statements.
+
+   * - dialectClass
+     - null
+     - The fully qualified name of a ``SqlDialect`` class to use instead of
+       looking one up by name.
+
+   * - clientSideMetadataProbe
+     - true
+     - Whether the result set metadata of a client-side query may be fetched
+       from the server before the query runs.
+
 Note that URI values must be URI-encoded if they contain characters such
 as !, @, $, etc.
 
@@ -173,6 +200,230 @@ DriverManager#getConnection()
 <https://docs.oracle.com/javase/8/docs/api/java/sql/DriverManager.html#getConnection-java.lang.String-java.lang.String-java.lang.String->`_,
 the username and password supplied on the URI supercede the username and
 password arguments to the function call.
+
+.. _flight-sql-jdbc-client-side-statements:
+
+Client-Side Prepared Statements
+===============================
+
+By default a ``PreparedStatement`` is prepared on the server, and its
+parameters are sent separately from the SQL text.  Some Flight SQL
+services cannot do that: they accept a statement, but cannot prepare it or
+bind parameters.  For those, the driver can keep the ``PreparedStatement``
+API and do the binding itself, by replacing each ``?`` with the value
+written as a SQL literal.  The server then receives an ordinary statement.
+
+Two properties choose which statements are handled this way:
+
+* ``disableServerPreparedStatements=true``: no statement is prepared on
+  the server.  This also applies to a plain ``Statement``, which is sent to
+  the server exactly as written, so a ``?`` in it is just a character.
+* ``disableServerPreparedQueries=true``: only queries are handled by the
+  driver.  Statements that change data or schema are still prepared on the
+  server.  The driver decides which is which by the first keyword of the
+  statement: ``SELECT``, ``WITH``, ``VALUES``, ``SHOW``, ``DESCRIBE``,
+  ``DESC``, ``EXPLAIN`` and ``TABLE`` start a query, and anything else is an
+  update.  A dialect can change this rule.
+
+.. code-block:: java
+
+   Properties properties = new Properties();
+   properties.put("disableServerPreparedStatements", "true");
+   try (Connection connection = DriverManager.getConnection(
+            "jdbc:arrow-flight-sql://localhost:12345/?useEncryption=0", properties);
+        PreparedStatement statement = connection.prepareStatement(
+            "SELECT id FROM orders WHERE customer = ? AND placed > ?")) {
+     statement.setString(1, "O'Brien");
+     statement.setObject(2, LocalDate.of(2024, 1, 31));
+     // The server receives:
+     //   SELECT id FROM orders WHERE customer = 'O''Brien' AND placed > DATE '2024-01-31'
+     try (ResultSet resultSet = statement.executeQuery()) {
+       ...
+     }
+   }
+
+How parameters are written
+--------------------------
+
+A ``?`` is a parameter unless it is inside a string literal, a quoted
+identifier or a comment.  The values are written by the *dialect*, which is
+ANSI SQL unless the ``dialect`` property says otherwise:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Java value
+     - ANSI SQL
+   * - ``null``
+     - ``NULL``
+   * - ``String``
+     - ``'it''s'``, or ``N'...'`` after ``setNString``
+   * - ``boolean``
+     - ``TRUE`` / ``FALSE``
+   * - integers, ``BigInteger``, ``BigDecimal``
+     - ``42``
+   * - ``float``, ``double``
+     - ``1.5``, ``1.0E10``.  NaN and the infinities are rejected.
+   * - ``byte[]``, ``Blob``, binary streams
+     - ``X'0A1B'``
+   * - ``Clob``, ``Reader``, character streams
+     - a string literal
+   * - ``java.sql.Date``, ``LocalDate``
+     - ``DATE '2024-01-31'``
+   * - ``java.sql.Time``, ``LocalTime``, ``OffsetTime``
+     - ``TIME '10:15:30'``, ``TIME WITH TIME ZONE '10:15:30+02:00'``
+   * - ``java.sql.Timestamp``, ``LocalDateTime``
+     - ``TIMESTAMP '2024-01-31 10:15:30.5'``
+   * - ``OffsetDateTime``, ``ZonedDateTime``, ``Instant``
+     - ``TIMESTAMP WITH TIME ZONE '2024-01-31 10:15:30+02:00'``
+   * - ``Duration``, ``Period``, Arrow ``PeriodDuration``
+     - ``INTERVAL '1-2' YEAR TO MONTH`` or
+       ``INTERVAL '3 04:05:06.789' DAY TO SECOND``.  ANSI SQL cannot mix
+       months with days or time in one literal.
+   * - ``UUID``
+     - a string literal
+   * - ``java.sql.Array``, Java arrays, collections
+     - ``ARRAY[1, 2]``, or ``CAST(ARRAY[] AS INTEGER ARRAY)`` when empty
+   * - ``java.sql.Struct``, ``SQLData``
+     - ``ROW(1, 'a')``
+
+Besides ``setObject``, statements handled by the driver accept the types
+that Avatica rejects in server-prepared statements: ``java.time`` values,
+``UUID``, ``BigInteger``, arrays, intervals, and the LOB and stream setters.
+A value the dialect cannot write is reported by the setter, or when the
+statement runs for values such as NaN.  The driver never falls back to
+``toString()``.
+
+Negative numbers are written in parentheses, so that ``1-?`` with ``-5``
+cannot become the comment ``1--5``.
+
+Dates and times
+~~~~~~~~~~~~~~~
+
+Following JDBC 4.2, ``java.sql.Date``, ``Time``, ``Timestamp`` and
+``java.util.Date`` values keep all their precision, nanoseconds included.
+They are written as the wall-clock value in the time zone of the
+``Calendar`` passed to ``setDate``, ``setTime`` or ``setTimestamp``, or in
+the default time zone of the JVM if there is none.  The ``timeZone``
+connection property does not apply to them.  The same value gives the same
+literal as a lone parameter and inside an array or a struct.
+
+``setObject(index, value, targetSqlType)`` converts the value to a
+``DATE``, ``TIME``, ``TIMESTAMP``, ``TIME_WITH_TIMEZONE`` or
+``TIMESTAMP_WITH_TIMEZONE`` target as table B-5 of the JDBC 4.2
+specification describes.  For example, a ``LocalDateTime`` can be set as
+``Types.DATE``, and a ``String`` such as ``2024-01-31`` as ``Types.DATE``.
+A conversion that is not in the table is reported by the setter with a
+``SQLFeatureNotSupportedException``.  A date or time value set with a
+``CHAR``, ``VARCHAR`` or ``LONGVARCHAR`` target is written as ISO text.
+
+ANSI SQL has no seconds in a time zone offset, so a value with such an
+offset, such as the ``-00:14:44`` of ``Europe/Madrid`` before 1901, is
+written in UTC, which is the same instant.
+
+Limitations
+-----------
+
+* The statement text is different for every set of values, so the server
+  cannot reuse a plan, and values appear in its logs.  The driver does not
+  log them above DEBUG level.
+* A parameter that was never set is written as ``NULL``.
+* ``setNull`` loses its SQL type, so a null is written as plain ``NULL``.
+  A ``null`` inside an array is typed when the array declares its element
+  type.
+* A ``Struct`` has no field names in JDBC, so it is written as a positional
+  row.
+* Streams and LOBs are read when set, and are limited to 16 MiB.
+* ``{fn ...}`` and ``{call ...}`` escapes are not translated.
+* ``executeBatch`` runs one statement per row of parameters.
+
+Result set metadata
+-------------------
+
+A server-prepared statement knows its result columns before it runs.  A
+client-side query does not, so the first call to
+``PreparedStatement#getMetaData()`` asks the server for the schema: the
+driver sends the statement with every ``?`` replaced by ``NULL`` and reads
+the schema from the reply, without fetching any rows.  This happens once per
+statement, and never for updates.  If it fails, the metadata has no columns
+and nothing is reported.  Once the query has run, the metadata comes from the
+results.
+
+Replacing a ``?`` with ``NULL`` can change what the server infers: ``SELECT ?``
+has no type, for example.  Some services also do real work when asked for the
+schema.  Set ``clientSideMetadataProbe=false`` to turn this off.
+``ParameterMetaData`` always reports unknown parameter types.
+
+Writing a dialect
+-----------------
+
+A dialect implements ``org.apache.arrow.driver.jdbc.dialect.SqlDialect``.
+Every method but ``name()`` has an ANSI default, so a dialect only overrides
+what its database does differently:
+
+.. code-block:: java
+
+   package com.example;
+
+   import java.sql.SQLException;
+   import org.apache.arrow.driver.jdbc.dialect.SqlDialect;
+   import org.apache.arrow.driver.jdbc.dialect.SqlLexicalRules;
+
+   public class MyDbDialect implements SqlDialect {
+     @Override
+     public String name() {
+       return "mydb";
+     }
+
+     // How to find the ? markers: this database lets a backslash escape a quote.
+     @Override
+     public SqlLexicalRules lexicalRules() {
+       return SqlLexicalRules.builder().backslashEscapesInStrings(true).build();
+     }
+
+     @Override
+     public String formatBoolean(boolean value) throws SQLException {
+       return value ? "1" : "0";
+     }
+
+     @Override
+     public String formatString(String value, boolean national) throws SQLException {
+       return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'";
+     }
+   }
+
+Values reach the dialect as a small typed model in
+``org.apache.arrow.driver.jdbc.dialect.value`` (``SqlScalar``, ``SqlNull``,
+``SqlArray``, ``SqlRow`` and ``SqlIntervalValue``), never as JDBC or Avatica
+objects.  ``render(SqlValue)`` is the entry point, and arrays and rows render
+their elements through it, so an override applies at every level.  A
+dialect can also override ``classify(String)`` to decide what is a query and
+``metadataProbeSql(ScannedSql)`` to change the metadata probe.
+
+The default ``formatString`` doubles the quotes of a string.  It also doubles
+the backslashes when ``lexicalRules()`` says that a backslash is an escape,
+so a value can never end its literal early.  A dialect that overrides
+``formatString``, as the one above does, has to keep that guarantee itself.
+
+The driver finds dialects with ``java.util.ServiceLoader``.  List the class
+in ``META-INF/services/org.apache.arrow.driver.jdbc.dialect.SqlDialect`` in
+the jar that contains it, and put that jar on the classpath:
+
+.. code-block:: text
+
+   com.example.MyDbDialect
+
+Then select it with ``dialect=mydb``.  Names are not case-sensitive.  If two
+dialects have the same name, the one with the higher ``priority()`` wins, and
+equal priorities are an error.  A class that cannot be loaded is skipped with a
+warning.
+
+Where service files are not visible, for example in some application servers,
+name the class directly with ``dialectClass=com.example.MyDbDialect``.
+
+The dialect classes are the same in ``flight-sql-jdbc-driver``, which is
+shaded: they are not relocated, so a dialect compiles and runs against either
+artifact.
 
 OAuth 2.0 Authentication
 ========================
