@@ -196,6 +196,70 @@ public final class ArrowFlightConnectionConfigImplTest {
             false,
             false,
             (Function<ArrowFlightConnectionConfigImpl, ?>)
-                ArrowFlightConnectionConfigImpl::useClientCache));
+                ArrowFlightConnectionConfigImpl::useClientCache),
+        Arguments.of(
+            ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_STATEMENTS,
+            true,
+            true,
+            (Function<ArrowFlightConnectionConfigImpl, ?>)
+                ArrowFlightConnectionConfigImpl::disableServerPreparedStatements),
+        Arguments.of(
+            ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_QUERIES,
+            true,
+            true,
+            (Function<ArrowFlightConnectionConfigImpl, ?>)
+                ArrowFlightConnectionConfigImpl::disableServerPreparedQueries),
+        Arguments.of(
+            ArrowFlightConnectionProperty.DIALECT,
+            "postgresql",
+            "postgresql",
+            (Function<ArrowFlightConnectionConfigImpl, ?>)
+                ArrowFlightConnectionConfigImpl::getDialect),
+        Arguments.of(
+            ArrowFlightConnectionProperty.DIALECT_CLASS,
+            "com.example.MyDialect",
+            "com.example.MyDialect",
+            (Function<ArrowFlightConnectionConfigImpl, ?>)
+                ArrowFlightConnectionConfigImpl::getDialectClass),
+        Arguments.of(
+            ArrowFlightConnectionProperty.CLIENT_SIDE_METADATA_PROBE,
+            false,
+            false,
+            (Function<ArrowFlightConnectionConfigImpl, ?>)
+                ArrowFlightConnectionConfigImpl::useClientSideMetadataProbe));
+  }
+
+  @Test
+  public void testClientSidePreparedStatementDefaults() {
+    assertThat(arrowFlightConnectionConfig.disableServerPreparedStatements(), is(false));
+    assertThat(arrowFlightConnectionConfig.disableServerPreparedQueries(), is(false));
+    assertThat(arrowFlightConnectionConfig.getDialect(), is("ansi"));
+    assertThat(arrowFlightConnectionConfig.getDialectClass(), nullValue());
+    assertThat(arrowFlightConnectionConfig.useClientSideMetadataProbe(), is(true));
+  }
+
+  @Test
+  public void testDisablingAllStatementsImpliesDisablingQueries() {
+    properties.put(
+        ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_STATEMENTS.camelName(), true);
+    assertThat(arrowFlightConnectionConfig.disableServerPreparedQueries(), is(true));
+  }
+
+  @Test
+  public void testDisablingQueriesDoesNotDisableAllStatements() {
+    properties.put(ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_QUERIES.camelName(), true);
+    assertThat(arrowFlightConnectionConfig.disableServerPreparedQueries(), is(true));
+    assertThat(arrowFlightConnectionConfig.disableServerPreparedStatements(), is(false));
+  }
+
+  @Test
+  public void testClientSidePropertiesAreNotSentAsHeaders() {
+    properties.put(
+        ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_STATEMENTS.camelName(), true);
+    properties.put(ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_QUERIES.camelName(), true);
+    properties.put(ArrowFlightConnectionProperty.DIALECT.camelName(), "postgresql");
+    properties.put(ArrowFlightConnectionProperty.DIALECT_CLASS.camelName(), "com.example.D");
+    properties.put(ArrowFlightConnectionProperty.CLIENT_SIDE_METADATA_PROBE.camelName(), false);
+    assertThat(arrowFlightConnectionConfig.getHeaderAttributes().isEmpty(), is(true));
   }
 }

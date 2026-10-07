@@ -69,6 +69,7 @@ public class ArrowFlightStatement extends AvaticaStatement implements ArrowFligh
     // which resolves to this statement hook.
     return ArrowFlightPreparedStatement.builder(getConnection())
         .withQuery(query)
+        .withVerbatim(true)
         .withExistingStatement(this)
         .build()
         .prepareAndExecuteInternal(callback);

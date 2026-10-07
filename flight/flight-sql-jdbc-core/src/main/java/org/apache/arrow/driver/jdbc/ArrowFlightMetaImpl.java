@@ -19,6 +19,7 @@ package org.apache.arrow.driver.jdbc;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -247,6 +248,26 @@ public class ArrowFlightMetaImpl extends MetaImpl {
               : StatementType.SELECT;
     }
     return buildSignature(sql, resultSetSchema, parameterSchema, statementType);
+  }
+
+  /**
+   * Builds a signature for a client-side statement. Without a server there is no schema, so the
+   * parameters have an unknown type and the result set has no columns until the query runs.
+   */
+  static Signature buildClientSideSignature(
+      final String sql, final int parameterCount, final boolean isUpdate) {
+    final List<AvaticaParameter> parameters = new ArrayList<>(parameterCount);
+    for (int i = 1; i <= parameterCount; i++) {
+      parameters.add(
+          new AvaticaParameter(false, 0, 0, Types.OTHER, "OTHER", Object.class.getName(), "?" + i));
+    }
+    return new Signature(
+        new ArrayList<>(),
+        sql,
+        parameters,
+        Collections.emptyMap(),
+        null, // unnecessary, as SQL requests use ArrowFlightJdbcCursor
+        isUpdate ? StatementType.IS_DML : StatementType.SELECT);
   }
 
   private static Signature buildSignature(
