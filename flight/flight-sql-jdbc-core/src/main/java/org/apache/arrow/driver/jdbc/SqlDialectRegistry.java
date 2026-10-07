@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.stream.Collectors;
+import org.apache.arrow.driver.jdbc.dialect.AnsiSqlDialect;
 import org.apache.arrow.driver.jdbc.dialect.SqlDialect;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
@@ -79,6 +80,10 @@ final class SqlDialectRegistry {
             .filter(d -> d.name().equalsIgnoreCase(name))
             .collect(Collectors.toList());
     if (matches.isEmpty()) {
+      if (AnsiSqlDialect.NAME.equalsIgnoreCase(name)) {
+        // The built-in dialect does not depend on discovery working.
+        return new AnsiSqlDialect();
+      }
       throw new SQLException(
           String.format(
               "Unknown SQL dialect '%s'. Available dialects: %s",
@@ -103,7 +108,7 @@ final class SqlDialectRegistry {
    * Finds the dialects available through {@link ServiceLoader}. Each provider class is returned
    * once, even if both class loaders see it.
    *
-   * @return the dialects.
+   * @return the dialects, with the built-in ANSI dialect always among them.
    */
   static List<SqlDialect> discover() {
     final Map<String, SqlDialect> byClass = new LinkedHashMap<>();
@@ -143,6 +148,9 @@ final class SqlDialectRegistry {
             .map(SqlDialect::name)
             .map(n -> n.toLowerCase(Locale.ROOT))
             .collect(Collectors.toCollection(ArrayList::new));
+    if (!names.contains(AnsiSqlDialect.NAME)) {
+      names.add(AnsiSqlDialect.NAME);
+    }
     names.sort(Comparator.naturalOrder());
     return names.stream().distinct().collect(Collectors.joining(", "));
   }
