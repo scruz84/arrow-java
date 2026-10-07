@@ -31,6 +31,7 @@ import java.time.OffsetDateTime;
 import java.time.OffsetTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.apache.arrow.driver.jdbc.dialect.value.SqlArray;
@@ -45,6 +46,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 public class AnsiSqlDialectTest {
   private final SqlDialect dialect = new AnsiSqlDialect();
@@ -623,20 +625,65 @@ public class AnsiSqlDialectTest {
   }
 
   @Test
-  public void testOffsetsWithSecondsAreRejected() throws SQLException {
-    final ZoneOffset offset = ZoneOffset.ofHoursMinutesSeconds(5, 30, 15);
+  public void testOffsetsWithSecondsAreWrittenInUtc() throws SQLException {
+    // The Europe/Madrid offset before 1901.
+    final ZoneOffset localMeanTime = ZoneOffset.ofHoursMinutesSeconds(0, -14, -44);
+    assertEquals(
+        "TIME WITH TIME ZONE '00:14:44+00:00'",
+        render(OffsetTime.of(0, 0, 0, 0, localMeanTime), Types.TIME_WITH_TIMEZONE));
+    assertEquals(
+        "TIMESTAMP WITH TIME ZONE '1900-01-01 00:14:44.5+00:00'",
+        render(
+            OffsetDateTime.of(1900, 1, 1, 0, 0, 0, 500_000_000, localMeanTime),
+            Types.TIMESTAMP_WITH_TIMEZONE));
+    // The instant is the same, so the date can change.
+    assertEquals(
+        "TIMESTAMP WITH TIME ZONE '2020-01-01 21:33:50+00:00'",
+        render(
+            OffsetDateTime.of(2020, 1, 2, 3, 4, 5, 0, ZoneOffset.ofHoursMinutesSeconds(5, 30, 15)),
+            Types.TIMESTAMP_WITH_TIMEZONE));
+    // Offsets in whole minutes are kept.
+    assertEquals(
+        "TIME WITH TIME ZONE '03:04:05+05:30'",
+        render(
+            OffsetTime.of(3, 4, 5, 0, ZoneOffset.ofHoursMinutes(5, 30)), Types.TIME_WITH_TIMEZONE));
+  }
+
+  @Test
+  public void testOffsetTextRejectsSeconds() throws SQLException {
     assertThrows(
         SQLFeatureNotSupportedException.class,
-        () -> render(OffsetTime.of(3, 4, 5, 0, offset), Types.TIME_WITH_TIMEZONE));
-    assertThrows(
-        SQLFeatureNotSupportedException.class,
-        () ->
-            render(
-                OffsetDateTime.of(2020, 1, 2, 3, 4, 5, 0, offset), Types.TIMESTAMP_WITH_TIMEZONE));
+        () -> SqlLiterals.offsetText(ZoneOffset.ofHoursMinutesSeconds(5, 30, 15)));
     assertThrows(
         SQLFeatureNotSupportedException.class,
         () -> SqlLiterals.offsetText(ZoneOffset.ofTotalSeconds(-1)));
     assertEquals("+05:30", SqlLiterals.offsetText(ZoneOffset.ofHoursMinutes(5, 30)));
     assertEquals("-00:30", SqlLiterals.offsetText(ZoneOffset.ofHoursMinutes(0, -30)));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"ar", "hi-IN", "fa-IR", "th-TH-u-nu-thai", "ar-SA-u-nu-arab"})
+  public void testDatesAndTimesUseAsciiDigitsWhateverTheLocale(final String languageTag)
+      throws SQLException {
+    final Locale defaultLocale = Locale.getDefault();
+    try {
+      Locale.setDefault(Locale.forLanguageTag(languageTag));
+      assertEquals("DATE '2020-01-02'", render(LocalDate.of(2020, 1, 2), Types.DATE));
+      assertEquals(
+          "TIME '03:04:05.123456789'", render(LocalTime.of(3, 4, 5, 123_456_789), Types.TIME));
+      assertEquals(
+          "TIMESTAMP '2020-01-02 03:04:05.5'",
+          render(LocalDateTime.of(2020, 1, 2, 3, 4, 5, 500_000_000), Types.TIMESTAMP));
+      assertEquals(
+          "TIMESTAMP WITH TIME ZONE '2020-01-02 03:04:05-05:30'",
+          render(
+              OffsetDateTime.of(2020, 1, 2, 3, 4, 5, 0, ZoneOffset.ofHoursMinutes(-5, -30)),
+              Types.TIMESTAMP_WITH_TIMEZONE));
+      assertEquals(
+          "TIME WITH TIME ZONE '03:04:05+02:00'",
+          render(OffsetTime.of(3, 4, 5, 0, ZoneOffset.ofHours(2)), Types.TIME_WITH_TIMEZONE));
+    } finally {
+      Locale.setDefault(defaultLocale);
+    }
   }
 }

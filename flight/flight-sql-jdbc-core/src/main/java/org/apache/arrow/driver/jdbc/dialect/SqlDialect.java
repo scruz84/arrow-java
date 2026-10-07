@@ -201,21 +201,29 @@ public interface SqlDialect {
         + "'";
   }
 
-  /** A time literal with an offset: {@code TIME WITH TIME ZONE '03:04:05+02:00'}. */
+  /**
+   * A time literal with an offset: {@code TIME WITH TIME ZONE '03:04:05+02:00'}. ANSI offsets have
+   * no seconds, so a value with such an offset is written in UTC, which is the same instant.
+   */
   default String formatOffsetTime(OffsetTime t) throws SQLException {
+    final OffsetTime whole = SqlLiterals.withWholeMinuteOffset(t);
     return "TIME WITH TIME ZONE '"
-        + SqlLiterals.timeText(t.toLocalTime())
-        + SqlLiterals.offsetText(t.getOffset())
+        + SqlLiterals.timeText(whole.toLocalTime())
+        + SqlLiterals.offsetText(whole.getOffset())
         + "'";
   }
 
-  /** Also used for {@link java.time.ZonedDateTime} and {@link java.time.Instant} values. */
+  /**
+   * Also used for {@link java.time.ZonedDateTime} and {@link java.time.Instant} values. An offset
+   * with seconds is handled as in {@link #formatOffsetTime}.
+   */
   default String formatOffsetDateTime(OffsetDateTime t) throws SQLException {
+    final OffsetDateTime whole = SqlLiterals.withWholeMinuteOffset(t);
     return "TIMESTAMP WITH TIME ZONE '"
-        + SqlLiterals.dateText(t.toLocalDate())
+        + SqlLiterals.dateText(whole.toLocalDate())
         + " "
-        + SqlLiterals.timeText(t.toLocalTime())
-        + SqlLiterals.offsetText(t.getOffset())
+        + SqlLiterals.timeText(whole.toLocalTime())
+        + SqlLiterals.offsetText(whole.getOffset())
         + "'";
   }
 

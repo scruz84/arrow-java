@@ -31,6 +31,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.AbstractMap.SimpleImmutableEntry;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -105,6 +106,7 @@ public final class MockFlightSqlProducer implements FlightSqlProducer {
   private final Map<String, Boolean> isUpdateMap = new HashMap<>();
 
   private final Map<String, Integer> actionTypeCounter = new HashMap<>();
+  private final List<String> receivedStatements = Collections.synchronizedList(new ArrayList<>());
 
   private static FlightInfo getFlightInfoExportedAndImportedKeys(
       final Message message, final FlightDescriptor descriptor) {
@@ -312,6 +314,7 @@ public final class MockFlightSqlProducer implements FlightSqlProducer {
       final CallContext callContext,
       final FlightDescriptor flightDescriptor) {
     final String query = commandStatementQuery.getQuery();
+    receivedStatements.add(query);
     final Entry<Schema, List<UUID>> queryInfo =
         Preconditions.checkNotNull(
             queryResults.get(query), format("Query not registered: <%s>.", query));
@@ -398,8 +401,16 @@ public final class MockFlightSqlProducer implements FlightSqlProducer {
       final CallContext callContext,
       final FlightStream flightStream,
       final StreamListener<PutResult> streamListener) {
+    final String query = commandStatementUpdate.getQuery();
+    receivedStatements.add(query);
+    return runUpdate(query, flightStream, streamListener);
+  }
+
+  private Runnable runUpdate(
+      final String query,
+      final FlightStream flightStream,
+      final StreamListener<PutResult> streamListener) {
     return () -> {
-      final String query = commandStatementUpdate.getQuery();
       final BiConsumer<FlightStream, StreamListener<PutResult>> resultProvider =
           Preconditions.checkNotNull(
               updateResultProviders.get(query),
@@ -481,11 +492,7 @@ public final class MockFlightSqlProducer implements FlightSqlProducer {
       return () -> {};
     }
 
-    return acceptPutStatement(
-        CommandStatementUpdate.newBuilder().setQuery(query).build(),
-        callContext,
-        flightStream,
-        streamListener);
+    return runUpdate(query, flightStream, streamListener);
   }
 
   @Override
@@ -695,6 +702,21 @@ public final class MockFlightSqlProducer implements FlightSqlProducer {
 
   public Map<String, Integer> getActionTypeCounter() {
     return actionTypeCounter;
+  }
+
+  /**
+   * Gets the SQL of the statements received without a prepared statement, both queries and updates,
+   * in the order they arrived. Intended to be used in tests.
+   */
+  public List<String> getReceivedStatements() {
+    synchronized (receivedStatements) {
+      return new ArrayList<>(receivedStatements);
+    }
+  }
+
+  /** Clear the list of received statements. Intended to be used in tests. */
+  public void clearReceivedStatements() {
+    receivedStatements.clear();
   }
 
   private void getStreamCatalogFunctions(

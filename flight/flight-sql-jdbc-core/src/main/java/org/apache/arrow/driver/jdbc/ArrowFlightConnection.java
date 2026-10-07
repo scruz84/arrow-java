@@ -28,6 +28,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.apache.arrow.driver.jdbc.client.ArrowFlightSqlClientHandler;
 import org.apache.arrow.driver.jdbc.client.utils.FlightClientCache;
+import org.apache.arrow.driver.jdbc.dialect.SqlDialect;
+import org.apache.arrow.driver.jdbc.dialect.SqlDialectRegistry;
 import org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl;
 import org.apache.arrow.flight.FlightClient;
 import org.apache.arrow.memory.BufferAllocator;
@@ -43,6 +45,7 @@ public final class ArrowFlightConnection extends AvaticaConnection {
   private final BufferAllocator allocator;
   private final ArrowFlightSqlClientHandler clientHandler;
   private final ArrowFlightConnectionConfigImpl config;
+  private final SqlDialect dialect;
   private ExecutorService executorService;
   private int metadataResultSetCount;
   private Map<Integer, ArrowFlightJdbcFlightStreamResultSet> metadataResultSetMap = new HashMap<>();
@@ -57,6 +60,7 @@ public final class ArrowFlightConnection extends AvaticaConnection {
    * @param config the {@link ArrowFlightConnectionConfigImpl} to use.
    * @param allocator the {@link BufferAllocator} to use.
    * @param clientHandler the {@link ArrowFlightSqlClientHandler} to use.
+   * @param dialect the {@link SqlDialect} used to render parameters of client-side statements.
    */
   private ArrowFlightConnection(
       final ArrowFlightJdbcDriver driver,
@@ -65,9 +69,11 @@ public final class ArrowFlightConnection extends AvaticaConnection {
       final Properties properties,
       final ArrowFlightConnectionConfigImpl config,
       final BufferAllocator allocator,
-      final ArrowFlightSqlClientHandler clientHandler) {
+      final ArrowFlightSqlClientHandler clientHandler,
+      final SqlDialect dialect) {
     super(driver, factory, url, properties);
     this.config = Preconditions.checkNotNull(config, "Config cannot be null.");
+    this.dialect = Preconditions.checkNotNull(dialect, "Dialect cannot be null.");
     this.allocator = Preconditions.checkNotNull(allocator, "Allocator cannot be null.");
     this.clientHandler = Preconditions.checkNotNull(clientHandler, "Handler cannot be null.");
     this.metadataResultSetCount = 0;
@@ -93,10 +99,26 @@ public final class ArrowFlightConnection extends AvaticaConnection {
       throws SQLException {
     url = replaceSemiColons(url);
     final ArrowFlightConnectionConfigImpl config = new ArrowFlightConnectionConfigImpl(properties);
+    final SqlDialect dialect = resolveDialect(config, allocator);
     final ArrowFlightSqlClientHandler clientHandler =
         createNewClientHandler(config, allocator, driver.getDriverVersion());
     return new ArrowFlightConnection(
-        driver, factory, url, properties, config, allocator, clientHandler);
+        driver, factory, url, properties, config, allocator, clientHandler, dialect);
+  }
+
+  private static SqlDialect resolveDialect(
+      final ArrowFlightConnectionConfigImpl config, final BufferAllocator allocator)
+      throws SQLException {
+    try {
+      return SqlDialectRegistry.resolve(config.getDialect(), config.getDialectClass());
+    } catch (final SQLException e) {
+      try {
+        allocator.close();
+      } catch (final Exception allocatorCloseEx) {
+        e.addSuppressed(allocatorCloseEx);
+      }
+      throw e;
+    }
   }
 
   private static ArrowFlightSqlClientHandler createNewClientHandler(
@@ -248,6 +270,24 @@ public final class ArrowFlightConnection extends AvaticaConnection {
       throw AvaticaConnection.HELPER.createException(
           topLevelException.getMessage(), topLevelException);
     }
+  }
+
+  /**
+   * Gets the configuration of this connection.
+   *
+   * @return the configuration.
+   */
+  ArrowFlightConnectionConfigImpl getConfig() {
+    return config;
+  }
+
+  /**
+   * Gets the dialect used to render the parameters of client-side statements.
+   *
+   * @return the dialect.
+   */
+  SqlDialect getDialect() {
+    return dialect;
   }
 
   BufferAllocator getBufferAllocator() {

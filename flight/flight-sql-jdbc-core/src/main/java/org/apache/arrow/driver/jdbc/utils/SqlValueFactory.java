@@ -33,6 +33,7 @@ import java.sql.Struct;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -44,9 +45,12 @@ import java.time.Period;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collection;
+import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.UUID;
+import org.apache.arrow.driver.jdbc.dialect.SqlLiterals;
 import org.apache.arrow.driver.jdbc.dialect.value.SqlArray;
 import org.apache.arrow.driver.jdbc.dialect.value.SqlIntervalValue;
 import org.apache.arrow.driver.jdbc.dialect.value.SqlNull;
@@ -64,9 +68,12 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  * Builds the {@link SqlValue} for a statement parameter, normalizing what JDBC and Avatica hand
  * over so a {@link org.apache.arrow.driver.jdbc.dialect.SqlDialect} only deals with one model.
  *
- * <p>Avatica keeps dates, times and timestamps as numbers that hold the wall-clock value in the
- * statement's calendar zone, so they convert to {@code java.time} types without any time zone
- * arithmetic.
+ * <p>Avatica keeps dates, times and timestamps set through a {@link TypedValue} as numbers that
+ * hold the wall-clock value in the statement's calendar zone, so they convert to {@code java.time}
+ * types without any time zone arithmetic. A {@code java.sql} or {@code java.util} date handed over
+ * as an object, or through {@link #fromDate}, {@link #fromTime} and {@link #fromTimestamp}, keeps
+ * its full precision and is read in the zone of the given {@link Calendar}, or in the default zone
+ * of the JVM if there is none, as JDBC requires.
  */
 public final class SqlValueFactory {
   /** The largest LOB or stream parameter, in bytes or characters, that is rendered inline. */
@@ -131,6 +138,270 @@ public final class SqlValueFactory {
   }
 
   /**
+   * Builds the value of a date.
+   *
+   * @param date the date.
+   * @param calendar the calendar whose time zone gives the year, month and day, or {@code null} for
+   *     the default time zone of the JVM. A Gregorian calendar also contributes its cutover date.
+   * @return the value.
+   * @throws SQLException if the date cannot be represented.
+   */
+  public static SqlValue fromDate(java.sql.Date date, @Nullable Calendar calendar)
+      throws SQLException {
+    try {
+      return scalar(
+          calendar == null ? date.toLocalDate() : localDate(at(calendar, date.getTime())),
+          Types.DATE);
+    } catch (DateTimeException e) {
+      throw new SQLException("Cannot represent the date " + date, e);
+    }
+  }
+
+  /**
+   * Builds the value of a time of day, with milliseconds.
+   *
+   * @param time the time.
+   * @param calendar the calendar whose time zone gives the hour, or {@code null} for the default
+   *     time zone of the JVM.
+   * @return the value.
+   */
+  public static SqlValue fromTime(Time time, @Nullable Calendar calendar) {
+    final long millis = time.getTime();
+    final LocalTime local =
+        calendar == null
+            ? time.toLocalTime().withNano(millisOf(millis) * 1_000_000)
+            : localTime(at(calendar, millis), millisOf(millis) * 1_000_000);
+    return scalar(local, Types.TIME);
+  }
+
+  /**
+   * Builds the value of a timestamp, with its full precision of nanoseconds.
+   *
+   * @param timestamp the timestamp.
+   * @param calendar the calendar whose time zone gives the wall-clock value, or {@code null} for
+   *     the default time zone of the JVM. A Gregorian calendar also contributes its cutover date.
+   * @return the value.
+   * @throws SQLException if the timestamp cannot be represented.
+   */
+  public static SqlValue fromTimestamp(Timestamp timestamp, @Nullable Calendar calendar)
+      throws SQLException {
+    try {
+      return scalar(
+          calendar == null
+              ? timestamp.toLocalDateTime()
+              : localDateTime(calendar, timestamp.getTime(), timestamp.getNanos()),
+          Types.TIMESTAMP);
+    } catch (DateTimeException e) {
+      throw new SQLException("Cannot represent the timestamp " + timestamp, e);
+    }
+  }
+
+  private static SqlValue fromCalendar(Calendar calendar) throws SQLException {
+    final long millis = calendar.getTimeInMillis();
+    try {
+      return scalar(localDateTime(calendar, millis, millisOf(millis) * 1_000_000), Types.TIMESTAMP);
+    } catch (DateTimeException e) {
+      throw new SQLException("Cannot represent the calendar " + calendar.getTime(), e);
+    }
+  }
+
+  /**
+   * Builds the value for a Java object that is set with a target SQL type, converting it as table
+   * B-5 of JDBC 4.2 describes.
+   *
+   * <p>If the target is a date or time type, the object is converted to it. A date, time or
+   * timestamp object is written as ISO text if the target is {@code CHAR}, {@code VARCHAR} or
+   * {@code LONGVARCHAR}. Any other target is ignored, and the value is the one {@link
+   * #fromJava(Object)} builds.
+   *
+   * @param value the object.
+   * @param targetSqlType the {@link Types} constant.
+   * @return the value.
+   * @throws SQLException if the object cannot be converted to the date or time type.
+   */
+  public static SqlValue fromJava(@Nullable Object value, int targetSqlType) throws SQLException {
+    if (value == null) {
+      return UNKNOWN_NULL;
+    }
+    if (isDateTimeType(targetSqlType)) {
+      return toDateTime(value, targetSqlType);
+    }
+    final SqlValue natural = fromJava(value);
+    if (isCharacterType(targetSqlType)
+        && natural instanceof SqlScalar scalar
+        && isDateTimeType(scalar.type().jdbcType())) {
+      return scalar(isoText(scalar.javaValue()), targetSqlType);
+    }
+    return natural;
+  }
+
+  /**
+   * Tells whether a {@link Types} constant is {@code DATE}, {@code TIME}, {@code TIMESTAMP} or a
+   * variant with time zone.
+   */
+  public static boolean isDateTimeType(int jdbcType) {
+    return jdbcType == Types.DATE
+        || jdbcType == Types.TIME
+        || jdbcType == Types.TIMESTAMP
+        || jdbcType == Types.TIME_WITH_TIMEZONE
+        || jdbcType == Types.TIMESTAMP_WITH_TIMEZONE;
+  }
+
+  private static boolean isCharacterType(int jdbcType) {
+    return jdbcType == Types.CHAR || jdbcType == Types.VARCHAR || jdbcType == Types.LONGVARCHAR;
+  }
+
+  private static SqlValue toDateTime(Object value, int target) throws SQLException {
+    Object source;
+    if (value instanceof String text) {
+      source = text;
+    } else {
+      final SqlValue natural = fromJava(value);
+      if (!(natural instanceof SqlScalar scalar) || !isDateTimeType(scalar.type().jdbcType())) {
+        throw unsupportedConversion(value, target);
+      }
+      source = scalar.javaValue();
+      // A legacy date or time stands for the full timestamp, whatever the target.
+      if (value instanceof java.util.Date || value instanceof Calendar) {
+        if (source instanceof LocalDate date) {
+          source = date.atStartOfDay();
+        } else if (source instanceof LocalTime time) {
+          source = time.atDate(LocalDate.EPOCH);
+        }
+      }
+    }
+    try {
+      final Object converted = convertDateTime(source, target);
+      if (converted != null) {
+        return scalar(converted, target);
+      }
+    } catch (DateTimeException | IllegalArgumentException e) {
+      throw new SQLException("Cannot convert the value " + value + " to JDBC type " + target, e);
+    }
+    throw unsupportedConversion(value, target);
+  }
+
+  /** Returns the converted value, or {@code null} if the conversion is not in table B-5. */
+  private static @Nullable Object convertDateTime(Object source, int target) {
+    switch (target) {
+      case Types.DATE:
+        if (source instanceof LocalDate) {
+          return source;
+        } else if (source instanceof LocalDateTime dateTime) {
+          return dateTime.toLocalDate();
+        } else if (source instanceof String text) {
+          return java.sql.Date.valueOf(text).toLocalDate();
+        }
+        return null;
+      case Types.TIME:
+        if (source instanceof LocalTime) {
+          return source;
+        } else if (source instanceof LocalDateTime dateTime) {
+          return dateTime.toLocalTime();
+        } else if (source instanceof String text) {
+          return Time.valueOf(text).toLocalTime();
+        }
+        return null;
+      case Types.TIMESTAMP:
+        if (source instanceof LocalDateTime) {
+          return source;
+        } else if (source instanceof String text) {
+          return Timestamp.valueOf(text).toLocalDateTime();
+        }
+        return null;
+      case Types.TIME_WITH_TIMEZONE:
+        if (source instanceof OffsetTime) {
+          return source;
+        } else if (source instanceof OffsetDateTime dateTime) {
+          return dateTime.toOffsetTime();
+        } else if (source instanceof String text) {
+          return OffsetTime.parse(text);
+        }
+        return null;
+      case Types.TIMESTAMP_WITH_TIMEZONE:
+        if (source instanceof OffsetDateTime) {
+          return source;
+        } else if (source instanceof String text) {
+          return OffsetDateTime.parse(text);
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  private static SQLFeatureNotSupportedException unsupportedConversion(Object value, int target) {
+    return new SQLFeatureNotSupportedException(
+        "Cannot convert a parameter of type "
+            + value.getClass().getName()
+            + " to JDBC type "
+            + target);
+  }
+
+  /**
+   * The ISO text of a date or time value, with the offset of a value that has one in whole minutes.
+   */
+  private static String isoText(Object value) throws SQLException {
+    if (value instanceof LocalDate date) {
+      return SqlLiterals.dateText(date);
+    } else if (value instanceof LocalTime time) {
+      return SqlLiterals.timeText(time);
+    } else if (value instanceof LocalDateTime dateTime) {
+      return SqlLiterals.dateText(dateTime.toLocalDate())
+          + " "
+          + SqlLiterals.timeText(dateTime.toLocalTime());
+    } else if (value instanceof OffsetTime time) {
+      final OffsetTime whole = SqlLiterals.withWholeMinuteOffset(time);
+      return SqlLiterals.timeText(whole.toLocalTime()) + SqlLiterals.offsetText(whole.getOffset());
+    }
+    final OffsetDateTime whole = SqlLiterals.withWholeMinuteOffset((OffsetDateTime) value);
+    return SqlLiterals.dateText(whole.toLocalDate())
+        + " "
+        + SqlLiterals.timeText(whole.toLocalTime())
+        + SqlLiterals.offsetText(whole.getOffset());
+  }
+
+  /**
+   * A copy of the calendar set to an instant. The copy of a Gregorian calendar keeps its
+   * Julian-Gregorian cutover; a calendar of another system, such as the Buddhist one, only
+   * contributes its time zone, as its year and era are not those of a SQL date.
+   */
+  private static Calendar at(Calendar calendar, long millis) {
+    final Calendar copy =
+        "gregory".equals(calendar.getCalendarType())
+            ? (Calendar) calendar.clone()
+            : new GregorianCalendar(calendar.getTimeZone());
+    copy.setTimeInMillis(millis);
+    return copy;
+  }
+
+  private static int millisOf(long epochMillis) {
+    return (int) Math.floorMod(epochMillis, 1000L);
+  }
+
+  private static LocalDate localDate(Calendar calendar) {
+    final int year = calendar.get(Calendar.YEAR);
+    return LocalDate.of(
+        calendar.get(Calendar.ERA) == GregorianCalendar.BC ? 1 - year : year,
+        calendar.get(Calendar.MONTH) + 1,
+        calendar.get(Calendar.DAY_OF_MONTH));
+  }
+
+  private static LocalTime localTime(Calendar calendar, int nanos) {
+    return LocalTime.of(
+        calendar.get(Calendar.HOUR_OF_DAY),
+        calendar.get(Calendar.MINUTE),
+        calendar.get(Calendar.SECOND),
+        nanos);
+  }
+
+  /** The wall-clock value of an instant in the zone of the calendar, with the given nanoseconds. */
+  private static LocalDateTime localDateTime(Calendar calendar, long epochMillis, int nanos) {
+    final Calendar copy = at(calendar, epochMillis);
+    return localDate(copy).atTime(localTime(copy, nanos));
+  }
+
+  /**
    * Builds the value for a Java object.
    *
    * @param value the object: a JDBC value, a {@code java.time} value, a {@link UUID}, a Java array
@@ -169,13 +440,15 @@ public final class SqlValueFactory {
     } else if (value instanceof UUID) {
       return new SqlScalar(value, SqlType.of(Types.OTHER, "UUID"));
     } else if (value instanceof java.sql.Date date) {
-      return scalar(date.toLocalDate(), Types.DATE);
+      return fromDate(date, null);
     } else if (value instanceof Time time) {
-      return scalar(time.toLocalTime(), Types.TIME);
+      return fromTime(time, null);
     } else if (value instanceof Timestamp timestamp) {
-      return scalar(timestamp.toLocalDateTime(), Types.TIMESTAMP);
+      return fromTimestamp(timestamp, null);
     } else if (value instanceof java.util.Date date) {
-      return scalar(new Timestamp(date.getTime()).toLocalDateTime(), Types.TIMESTAMP);
+      return fromTimestamp(new Timestamp(date.getTime()), null);
+    } else if (value instanceof Calendar calendar) {
+      return fromCalendar(calendar);
     } else if (value instanceof LocalDate) {
       return scalar(value, Types.DATE);
     } else if (value instanceof LocalTime) {

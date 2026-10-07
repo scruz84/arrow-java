@@ -130,6 +130,16 @@ public class FlightServerTestExtension
     return this.createDataSource().getConnection();
   }
 
+  /** Gets a connection with extra connection properties, which later connections do not see. */
+  public Connection getConnection(java.util.Map<String, Object> extraProperties)
+      throws SQLException {
+    setUseEncryption(false);
+    final Properties copy = new Properties();
+    copy.putAll(properties);
+    copy.putAll(extraProperties);
+    return ArrowFlightJdbcDataSource.createNewDataSource(copy).getConnection();
+  }
+
   public Connection getConnection(String timezone) throws SQLException {
     setUseEncryption(false);
     properties.put("timezone", timezone);

@@ -183,6 +183,38 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
   }
 
   /**
+   * Whether no statement should be prepared on the server. Parameters are then rendered into the
+   * SQL text on the client.
+   */
+  public boolean disableServerPreparedStatements() {
+    return ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_STATEMENTS.getBoolean(properties);
+  }
+
+  /**
+   * Whether queries should not be prepared on the server. Implied by {@link
+   * #disableServerPreparedStatements()}.
+   */
+  public boolean disableServerPreparedQueries() {
+    return disableServerPreparedStatements()
+        || ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_QUERIES.getBoolean(properties);
+  }
+
+  /** The name of the SQL dialect used to render parameter values. */
+  public String getDialect() {
+    return ArrowFlightConnectionProperty.DIALECT.getString(properties);
+  }
+
+  /** The fully qualified class name of the SQL dialect, or {@code null} to use discovery. */
+  public @Nullable String getDialectClass() {
+    return ArrowFlightConnectionProperty.DIALECT_CLASS.getString(properties);
+  }
+
+  /** Whether client-side statements may probe the server for result set metadata. */
+  public boolean useClientSideMetadataProbe() {
+    return ArrowFlightConnectionProperty.CLIENT_SIDE_METADATA_PROBE.getBoolean(properties);
+  }
+
+  /**
    * Gets the {@link CallOption}s from this {@link ConnectionConfig}.
    *
    * @return the call options.
@@ -267,6 +299,14 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
     CATALOG("catalog", null, Type.STRING, false),
     CONNECT_TIMEOUT_MILLIS("connectTimeoutMs", 10000, Type.NUMBER, false),
     USE_CLIENT_CACHE("useClientCache", true, Type.BOOLEAN, false),
+
+    // Client-side prepared statements
+    DISABLE_SERVER_PREPARED_STATEMENTS(
+        "disableServerPreparedStatements", false, Type.BOOLEAN, false),
+    DISABLE_SERVER_PREPARED_QUERIES("disableServerPreparedQueries", false, Type.BOOLEAN, false),
+    DIALECT("dialect", "ansi", Type.STRING, false),
+    DIALECT_CLASS("dialectClass", null, Type.STRING, false),
+    CLIENT_SIDE_METADATA_PROBE("clientSideMetadataProbe", true, Type.BOOLEAN, false),
 
     // OAuth configuration properties
     OAUTH_FLOW("oauth.flow", null, Type.STRING, false),

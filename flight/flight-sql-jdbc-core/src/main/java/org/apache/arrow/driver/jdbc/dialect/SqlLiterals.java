@@ -20,6 +20,8 @@ import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
 import java.time.ZoneOffset;
 import java.util.Locale;
 
@@ -46,6 +48,19 @@ public final class SqlLiterals {
       return base;
     }
     return base + "." + String.format(Locale.ROOT, "%09d", t.getNano()).replaceAll("0+$", "");
+  }
+
+  /**
+   * The same instant with an offset that {@link #offsetText} can write: an offset with seconds,
+   * such as the {@code -00:14:44} of Europe/Madrid before 1901, is replaced by UTC.
+   */
+  public static OffsetDateTime withWholeMinuteOffset(OffsetDateTime t) {
+    return t.getOffset().getTotalSeconds() % 60 == 0 ? t : t.withOffsetSameInstant(ZoneOffset.UTC);
+  }
+
+  /** Like {@link #withWholeMinuteOffset(OffsetDateTime)}, for a time of day. */
+  public static OffsetTime withWholeMinuteOffset(OffsetTime t) {
+    return t.getOffset().getTotalSeconds() % 60 == 0 ? t : t.withOffsetSameInstant(ZoneOffset.UTC);
   }
 
   /** The form {@code +HH:mm}. ANSI literals have no seconds in an offset. */

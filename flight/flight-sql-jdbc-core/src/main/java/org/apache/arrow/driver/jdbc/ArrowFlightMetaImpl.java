@@ -19,12 +19,16 @@ package org.apache.arrow.driver.jdbc;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.SQLTimeoutException;
+import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.apache.arrow.driver.jdbc.client.ArrowFlightSqlClientHandler.PreparedStatement;
+import org.apache.arrow.driver.jdbc.client.ClientSidePreparedStatement;
+import org.apache.arrow.driver.jdbc.dialect.StatementKind;
+import org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl;
 import org.apache.arrow.driver.jdbc.utils.AvaticaParameterBinder;
 import org.apache.arrow.driver.jdbc.utils.ConvertUtils;
 import org.apache.arrow.util.Preconditions;
@@ -83,6 +87,26 @@ public class ArrowFlightMetaImpl extends MetaImpl {
         statementType);
   }
 
+  /**
+   * Construct a signature for a client-side statement. Without a server there is no schema, so the
+   * parameters have an unknown type and the result set has no columns until the query runs.
+   */
+  static Signature newClientSideSignature(
+      final String sql, final int parameterCount, final boolean isUpdate) {
+    final List<AvaticaParameter> parameters = new ArrayList<>(parameterCount);
+    for (int i = 1; i <= parameterCount; i++) {
+      parameters.add(
+          new AvaticaParameter(false, 0, 0, Types.OTHER, "OTHER", Object.class.getName(), "?" + i));
+    }
+    return new Signature(
+        new ArrayList<>(),
+        sql,
+        parameters,
+        Collections.emptyMap(),
+        null, // unnecessary, as SQL requests use ArrowFlightJdbcCursor
+        isUpdate ? StatementType.IS_DML : StatementType.SELECT);
+  }
+
   @Override
   public void closeStatement(final StatementHandle statementHandle) {
     PreparedStatement preparedStatement =
@@ -113,9 +137,13 @@ public class ArrowFlightMetaImpl extends MetaImpl {
       throw new IllegalStateException("Prepared statement not found: " + statementHandle);
     }
 
-    new AvaticaParameterBinder(
-            preparedStatement, ((ArrowFlightConnection) connection).getBufferAllocator())
-        .bind(typedValues);
+    if (preparedStatement instanceof ClientSidePreparedStatement) {
+      ((ClientSidePreparedStatement) preparedStatement).bind(typedValues);
+    } else {
+      new AvaticaParameterBinder(
+              preparedStatement, ((ArrowFlightConnection) connection).getBufferAllocator())
+          .bind(typedValues);
+    }
 
     if (statementHandle.signature == null
         || statementHandle.signature.statementType == StatementType.IS_DML) {
@@ -157,6 +185,16 @@ public class ArrowFlightMetaImpl extends MetaImpl {
       throw new IllegalStateException("Prepared statement not found: " + statementHandle);
     }
 
+    if (preparedStatement instanceof ClientSidePreparedStatement) {
+      // Each row of parameters becomes its own statement, so each has its own update count.
+      final long[] counts = new long[parameterValuesList.size()];
+      for (int i = 0; i < counts.length; i++) {
+        ((ClientSidePreparedStatement) preparedStatement).bind(parameterValuesList.get(i));
+        counts[i] = preparedStatement.executeUpdate();
+      }
+      return new ExecuteBatchResult(counts);
+    }
+
     final AvaticaParameterBinder binder =
         new AvaticaParameterBinder(
             preparedStatement, ((ArrowFlightConnection) connection).getBufferAllocator());
@@ -181,15 +219,52 @@ public class ArrowFlightMetaImpl extends MetaImpl {
         String.format("%s does not use frames.", this), AvaticaConnection.HELPER.unsupported());
   }
 
-  private PreparedStatement prepareForHandle(final String query, StatementHandle handle) {
-    final PreparedStatement preparedStatement =
-        ((ArrowFlightConnection) connection).getClientHandler().prepare(query);
-    handle.signature =
-        newSignature(
-            query,
-            preparedStatement.getDataSetSchema(),
-            preparedStatement.getParameterSchema(),
-            preparedStatement.isUpdate());
+  /**
+   * Tells whether a statement is handled on the client instead of being prepared on the server.
+   * That depends on the {@code disableServerPreparedStatements} and {@code
+   * disableServerPreparedQueries} properties, and for the latter on the kind of statement.
+   */
+  private boolean isClientSide(final String query) {
+    final ArrowFlightConnection flightConnection = (ArrowFlightConnection) connection;
+    final ArrowFlightConnectionConfigImpl config = flightConnection.getConfig();
+    if (config.disableServerPreparedStatements()) {
+      return true;
+    }
+    return config.disableServerPreparedQueries()
+        && flightConnection.getDialect().classify(query) == StatementKind.QUERY;
+  }
+
+  /**
+   * Prepares a statement for a handle.
+   *
+   * @param verbatim whether the statement is sent exactly as written, as a plain statement is,
+   *     instead of treating {@code ?} as a parameter.
+   */
+  private PreparedStatement prepareForHandle(
+      final String query, StatementHandle handle, boolean verbatim) {
+    final ArrowFlightConnection flightConnection = (ArrowFlightConnection) connection;
+    final PreparedStatement preparedStatement;
+    if (isClientSide(query)) {
+      final boolean probe = flightConnection.getConfig().useClientSideMetadataProbe();
+      final ClientSidePreparedStatement clientSide =
+          verbatim
+              ? ClientSidePreparedStatement.verbatim(
+                  flightConnection.getClientHandler(), flightConnection.getDialect(), query, probe)
+              : ClientSidePreparedStatement.create(
+                  flightConnection.getClientHandler(), flightConnection.getDialect(), query, probe);
+      handle.signature =
+          newClientSideSignature(
+              query, clientSide.getParameterCount(), Boolean.TRUE.equals(clientSide.isUpdate()));
+      preparedStatement = clientSide;
+    } else {
+      preparedStatement = flightConnection.getClientHandler().prepare(query);
+      handle.signature =
+          newSignature(
+              query,
+              preparedStatement.getDataSetSchema(),
+              preparedStatement.getParameterSchema(),
+              preparedStatement.isUpdate());
+    }
     statementHandlePreparedStatementMap.put(new StatementHandleKey(handle), preparedStatement);
     return preparedStatement;
   }
@@ -198,7 +273,7 @@ public class ArrowFlightMetaImpl extends MetaImpl {
   public StatementHandle prepare(
       final ConnectionHandle connectionHandle, final String query, final long maxRowCount) {
     final StatementHandle handle = super.createStatement(connectionHandle);
-    prepareForHandle(query, handle);
+    prepareForHandle(query, handle, false);
     return handle;
   }
 
@@ -222,7 +297,7 @@ public class ArrowFlightMetaImpl extends MetaImpl {
       final PrepareCallback callback)
       throws NoSuchStatementException {
     try {
-      PreparedStatement preparedStatement = prepareForHandle(query, handle);
+      PreparedStatement preparedStatement = prepareForHandle(query, handle, true);
       final StatementType statementType = preparedStatement.getType();
 
       final long updateCount =

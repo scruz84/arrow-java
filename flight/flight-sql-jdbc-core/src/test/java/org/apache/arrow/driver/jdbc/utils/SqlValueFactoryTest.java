@@ -18,6 +18,7 @@ package org.apache.arrow.driver.jdbc.utils;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -53,9 +54,12 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.GregorianCalendar;
 import java.util.List;
+import java.util.Locale;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.util.stream.Stream;
 import org.apache.arrow.driver.jdbc.dialect.value.SqlArray;
 import org.apache.arrow.driver.jdbc.dialect.value.SqlIntervalValue;
 import org.apache.arrow.driver.jdbc.dialect.value.SqlNull;
@@ -69,7 +73,13 @@ import org.apache.calcite.avatica.AvaticaSite;
 import org.apache.calcite.avatica.ColumnMetaData.Rep;
 import org.apache.calcite.avatica.remote.TypedValue;
 import org.apache.calcite.avatica.util.ByteString;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 public class SqlValueFactoryTest {
   /** Sets a parameter through Avatica's own setters, as a JDBC call would. */
@@ -727,5 +737,378 @@ public class SqlValueFactoryTest {
         assertInstanceOf(
             SqlScalar.class, SqlValueFactory.fromJava(new ByteArrayInputStream(new byte[0])));
     assertEquals(0, ((byte[]) stream.javaValue()).length);
+  }
+
+  // Dates and times set as objects keep their precision and use the zone of the JVM or of the
+  // calendar.
+
+  private static final Instant NANO_INSTANT = Instant.parse("2020-01-02T03:04:05.123456789Z");
+
+  private TimeZone defaultTimeZone;
+
+  @BeforeEach
+  public void rememberDefaultTimeZone() {
+    defaultTimeZone = TimeZone.getDefault();
+  }
+
+  @AfterEach
+  public void restoreDefaultTimeZone() {
+    TimeZone.setDefault(defaultTimeZone);
+  }
+
+  private static Calendar calendar(String zone) {
+    return Calendar.getInstance(TimeZone.getTimeZone(zone));
+  }
+
+  @Test
+  public void testTimestampKeepsNanoseconds() throws SQLException {
+    TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+    final Timestamp timestamp = Timestamp.from(NANO_INSTANT);
+    final LocalDateTime expected = LocalDateTime.of(2020, 1, 2, 3, 4, 5, 123_456_789);
+    assertScalar(expected, Types.TIMESTAMP, SqlValueFactory.fromJava(timestamp));
+    assertScalar(expected, Types.TIMESTAMP, SqlValueFactory.fromTimestamp(timestamp, null));
+    assertScalar(
+        expected, Types.TIMESTAMP, SqlValueFactory.fromTimestamp(timestamp, calendar("UTC")));
+  }
+
+  @Test
+  public void testTimeKeepsMilliseconds() throws SQLException {
+    TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+    final Time time = new Time(NANO_INSTANT.toEpochMilli());
+    final LocalTime expected = LocalTime.of(3, 4, 5, 123_000_000);
+    assertScalar(expected, Types.TIME, SqlValueFactory.fromJava(time));
+    assertScalar(expected, Types.TIME, SqlValueFactory.fromTime(time, calendar("UTC")));
+  }
+
+  @Test
+  public void testTimesBeforeTheEpochKeepMilliseconds() throws SQLException {
+    TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+    final Time time = new Time(-1L);
+    final LocalTime expected = LocalTime.of(23, 59, 59, 999_000_000);
+    assertScalar(expected, Types.TIME, SqlValueFactory.fromTime(time, null));
+    assertScalar(expected, Types.TIME, SqlValueFactory.fromTime(time, calendar("UTC")));
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource
+  public void testDefaultZoneAcrossDaylightSavingTime(
+      final String name, final String zone, final Instant instant, final LocalDateTime expected)
+      throws SQLException {
+    TimeZone.setDefault(TimeZone.getTimeZone(zone));
+    final Timestamp timestamp = Timestamp.from(instant);
+    assertScalar(expected, Types.TIMESTAMP, SqlValueFactory.fromJava(timestamp));
+    assertScalar(expected, Types.TIMESTAMP, SqlValueFactory.fromTimestamp(timestamp, null));
+    // A calendar of the same zone gives the same value.
+    assertScalar(
+        expected, Types.TIMESTAMP, SqlValueFactory.fromTimestamp(timestamp, calendar(zone)));
+    assertScalar(
+        expected.toLocalDate(),
+        Types.DATE,
+        SqlValueFactory.fromJava(new java.sql.Date(instant.toEpochMilli())));
+    assertScalar(
+        expected.toLocalTime(),
+        Types.TIME,
+        SqlValueFactory.fromJava(new Time(instant.toEpochMilli())));
+  }
+
+  private static Stream<Arguments> testDefaultZoneAcrossDaylightSavingTime() {
+    return Stream.of(
+        // Madrid: the clocks go from 02:00 to 03:00 on 2020-03-29 and back on 2020-10-25.
+        Arguments.of(
+            "Europe/Madrid before the gap",
+            "Europe/Madrid",
+            Instant.parse("2020-03-29T00:59:59Z"),
+            LocalDateTime.of(2020, 3, 29, 1, 59, 59)),
+        Arguments.of(
+            "Europe/Madrid after the gap",
+            "Europe/Madrid",
+            Instant.parse("2020-03-29T01:00:00Z"),
+            LocalDateTime.of(2020, 3, 29, 3, 0, 0)),
+        Arguments.of(
+            "Europe/Madrid first 02:30 of the overlap",
+            "Europe/Madrid",
+            Instant.parse("2020-10-25T00:30:00Z"),
+            LocalDateTime.of(2020, 10, 25, 2, 30, 0)),
+        Arguments.of(
+            "Europe/Madrid second 02:30 of the overlap",
+            "Europe/Madrid",
+            Instant.parse("2020-10-25T01:30:00Z"),
+            LocalDateTime.of(2020, 10, 25, 2, 30, 0)),
+        // Sao Paulo had daylight saving time until 2019: midnight went to 01:00 on 2018-11-04.
+        Arguments.of(
+            "America/Sao_Paulo before the gap",
+            "America/Sao_Paulo",
+            Instant.parse("2018-11-04T02:59:59Z"),
+            LocalDateTime.of(2018, 11, 3, 23, 59, 59)),
+        Arguments.of(
+            "America/Sao_Paulo after the gap",
+            "America/Sao_Paulo",
+            Instant.parse("2018-11-04T03:00:00Z"),
+            LocalDateTime.of(2018, 11, 4, 1, 0, 0)),
+        Arguments.of(
+            "America/Sao_Paulo in the overlap",
+            "America/Sao_Paulo",
+            Instant.parse("2019-02-17T01:30:00Z"),
+            LocalDateTime.of(2019, 2, 16, 23, 30, 0)));
+  }
+
+  @Test
+  public void testCalendarGivesTheZoneNotTheJvm() throws SQLException {
+    TimeZone.setDefault(TimeZone.getTimeZone("Europe/Madrid"));
+    final Timestamp timestamp = Timestamp.from(NANO_INSTANT);
+    assertScalar(
+        LocalDateTime.of(2020, 1, 2, 3, 4, 5, 123_456_789),
+        Types.TIMESTAMP,
+        SqlValueFactory.fromTimestamp(timestamp, calendar("UTC")));
+    assertScalar(
+        LocalDateTime.of(2020, 1, 2, 8, 34, 5, 123_456_789),
+        Types.TIMESTAMP,
+        SqlValueFactory.fromTimestamp(timestamp, calendar("Asia/Kolkata")));
+    assertScalar(
+        LocalDateTime.of(2020, 1, 2, 4, 4, 5, 123_456_789),
+        Types.TIMESTAMP,
+        SqlValueFactory.fromTimestamp(timestamp, null));
+    assertScalar(
+        LocalTime.of(8, 34, 5, 123_000_000),
+        Types.TIME,
+        SqlValueFactory.fromTime(new Time(NANO_INSTANT.toEpochMilli()), calendar("Asia/Kolkata")));
+    // 20:00 UTC is already the next day in Kolkata.
+    final long evening = Instant.parse("2020-01-02T20:00:00Z").toEpochMilli();
+    assertScalar(
+        LocalDate.of(2020, 1, 3),
+        Types.DATE,
+        SqlValueFactory.fromDate(new java.sql.Date(evening), calendar("Asia/Kolkata")));
+    assertScalar(
+        LocalDate.of(2020, 1, 2),
+        Types.DATE,
+        SqlValueFactory.fromDate(new java.sql.Date(evening), calendar("UTC")));
+  }
+
+  @Test
+  public void testCalendarIsNotModified() throws SQLException {
+    final Calendar calendar = calendar("Asia/Kolkata");
+    calendar.setTimeInMillis(0L);
+    SqlValueFactory.fromTimestamp(Timestamp.from(NANO_INSTANT), calendar);
+    SqlValueFactory.fromDate(new java.sql.Date(NANO_INSTANT.toEpochMilli()), calendar);
+    SqlValueFactory.fromTime(new Time(NANO_INSTANT.toEpochMilli()), calendar);
+    assertEquals(0L, calendar.getTimeInMillis());
+  }
+
+  @Test
+  public void testDateBeforeTheGregorianCutover() throws SQLException {
+    final java.sql.Date date = java.sql.Date.valueOf("1500-01-01");
+    final LocalDate expected = LocalDate.of(1500, 1, 1);
+    assertScalar(expected, Types.DATE, SqlValueFactory.fromJava(date));
+    assertScalar(expected, Types.DATE, SqlValueFactory.fromDate(date, null));
+    assertScalar(expected, Types.DATE, SqlValueFactory.fromDate(date, new GregorianCalendar()));
+    assertScalar(
+        LocalDateTime.of(1500, 1, 1, 0, 0),
+        Types.TIMESTAMP,
+        SqlValueFactory.fromTimestamp(
+            Timestamp.valueOf("1500-01-01 00:00:00"), new GregorianCalendar()));
+  }
+
+  @Test
+  public void testDateBeforeTheCommonEra() throws SQLException {
+    final GregorianCalendar bc = new GregorianCalendar(TimeZone.getTimeZone("UTC"));
+    bc.clear();
+    bc.set(Calendar.ERA, GregorianCalendar.BC);
+    bc.set(2, Calendar.MARCH, 4);
+    // Year 2 BC is the ISO year -1.
+    assertScalar(
+        LocalDate.of(-1, 3, 4),
+        Types.DATE,
+        SqlValueFactory.fromDate(new java.sql.Date(bc.getTimeInMillis()), calendar("UTC")));
+  }
+
+  @Test
+  public void testCalendarOtherThanGregorianOnlyGivesItsZone() throws SQLException {
+    final Calendar buddhist =
+        Calendar.getInstance(
+            TimeZone.getTimeZone("Asia/Kolkata"), Locale.forLanguageTag("th-TH-u-ca-buddhist"));
+    assertScalar(
+        LocalDateTime.of(2020, 1, 2, 8, 34, 5, 123_456_789),
+        Types.TIMESTAMP,
+        SqlValueFactory.fromTimestamp(Timestamp.from(NANO_INSTANT), buddhist));
+  }
+
+  @Test
+  public void testJavaUtilDateAndCalendarAreTimestamps() throws SQLException {
+    TimeZone.setDefault(TimeZone.getTimeZone("Asia/Kolkata"));
+    final LocalDateTime expected = LocalDateTime.of(2020, 1, 2, 8, 34, 5, 123_000_000);
+    assertScalar(
+        expected,
+        Types.TIMESTAMP,
+        SqlValueFactory.fromJava(new java.util.Date(NANO_INSTANT.toEpochMilli())));
+    final Calendar calendar = Calendar.getInstance();
+    calendar.setTimeInMillis(NANO_INSTANT.toEpochMilli());
+    assertScalar(expected, Types.TIMESTAMP, SqlValueFactory.fromJava(calendar));
+  }
+
+  @Test
+  public void testDateThatOnlyTheJulianCalendarHasIsRejected() {
+    // 1500 is a leap year in the Julian calendar but not in the ISO one.
+    final GregorianCalendar julian = new GregorianCalendar(TimeZone.getTimeZone("UTC"));
+    julian.clear();
+    julian.set(1500, Calendar.FEBRUARY, 29);
+    assertThrows(SQLException.class, () -> SqlValueFactory.fromJava(julian));
+    final java.sql.Date date = new java.sql.Date(julian.getTimeInMillis());
+    assertThrows(SQLException.class, () -> SqlValueFactory.fromDate(date, calendar("UTC")));
+  }
+
+  // setObject with a target SQL type.
+
+  private static Arguments conversion(Object value, int target, Object expected, int expectedType) {
+    return Arguments.of(value, target, expected, expectedType);
+  }
+
+  @ParameterizedTest
+  @MethodSource
+  public void testConversionToATargetType(
+      final Object value, final int target, final Object expected, final int expectedType)
+      throws SQLException {
+    TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+    assertScalar(expected, expectedType, SqlValueFactory.fromJava(value, target));
+  }
+
+  private static Stream<Arguments> testConversionToATargetType() {
+    final LocalDate date = LocalDate.of(2020, 1, 2);
+    final LocalTime time = LocalTime.of(3, 4, 5, 500_000_000);
+    final LocalDateTime dateTime = LocalDateTime.of(2020, 1, 2, 3, 4, 5, 123_456_789);
+    final OffsetTime offsetTime = OffsetTime.of(3, 4, 5, 0, ZoneOffset.ofHours(2));
+    final OffsetDateTime offsetDateTime =
+        OffsetDateTime.of(2020, 1, 2, 3, 4, 5, 0, ZoneOffset.ofHoursMinutes(5, 30));
+    final Timestamp timestamp = Timestamp.valueOf(dateTime);
+    return Stream.of(
+        conversion(date, Types.DATE, date, Types.DATE),
+        conversion(date, Types.VARCHAR, "2020-01-02", Types.VARCHAR),
+        conversion(time, Types.TIME, time, Types.TIME),
+        conversion(time, Types.CHAR, "03:04:05.5", Types.CHAR),
+        conversion(dateTime, Types.TIMESTAMP, dateTime, Types.TIMESTAMP),
+        conversion(dateTime, Types.DATE, date, Types.DATE),
+        conversion(dateTime, Types.TIME, dateTime.toLocalTime(), Types.TIME),
+        conversion(dateTime, Types.LONGVARCHAR, "2020-01-02 03:04:05.123456789", Types.LONGVARCHAR),
+        conversion(offsetTime, Types.TIME_WITH_TIMEZONE, offsetTime, Types.TIME_WITH_TIMEZONE),
+        conversion(offsetTime, Types.VARCHAR, "03:04:05+02:00", Types.VARCHAR),
+        conversion(
+            offsetDateTime,
+            Types.TIMESTAMP_WITH_TIMEZONE,
+            offsetDateTime,
+            Types.TIMESTAMP_WITH_TIMEZONE),
+        conversion(
+            offsetDateTime,
+            Types.TIME_WITH_TIMEZONE,
+            offsetDateTime.toOffsetTime(),
+            Types.TIME_WITH_TIMEZONE),
+        conversion(offsetDateTime, Types.VARCHAR, "2020-01-02 03:04:05+05:30", Types.VARCHAR),
+        conversion(
+            ZonedDateTime.of(dateTime, ZoneOffset.ofHours(2)),
+            Types.TIMESTAMP_WITH_TIMEZONE,
+            OffsetDateTime.of(dateTime, ZoneOffset.ofHours(2)),
+            Types.TIMESTAMP_WITH_TIMEZONE),
+        conversion(
+            Instant.parse("2020-01-02T03:04:05Z"),
+            Types.TIMESTAMP_WITH_TIMEZONE,
+            OffsetDateTime.of(2020, 1, 2, 3, 4, 5, 0, ZoneOffset.UTC),
+            Types.TIMESTAMP_WITH_TIMEZONE),
+        // An offset with seconds is written in UTC, as the SQL dialect does.
+        conversion(
+            OffsetDateTime.of(
+                1900, 1, 1, 0, 0, 0, 0, ZoneOffset.ofHoursMinutesSeconds(0, -14, -44)),
+            Types.VARCHAR,
+            "1900-01-01 00:14:44+00:00",
+            Types.VARCHAR),
+        conversion(java.sql.Date.valueOf("2020-01-02"), Types.DATE, date, Types.DATE),
+        conversion(
+            java.sql.Date.valueOf("2020-01-02"),
+            Types.TIMESTAMP,
+            LocalDateTime.of(2020, 1, 2, 0, 0),
+            Types.TIMESTAMP),
+        conversion(java.sql.Date.valueOf("2020-01-02"), Types.VARCHAR, "2020-01-02", Types.VARCHAR),
+        conversion(Time.valueOf("03:04:05"), Types.TIME, LocalTime.of(3, 4, 5), Types.TIME),
+        conversion(
+            Time.valueOf("03:04:05"),
+            Types.TIMESTAMP,
+            LocalDateTime.of(1970, 1, 1, 3, 4, 5),
+            Types.TIMESTAMP),
+        conversion(timestamp, Types.TIMESTAMP, dateTime, Types.TIMESTAMP),
+        conversion(timestamp, Types.DATE, date, Types.DATE),
+        conversion(timestamp, Types.TIME, dateTime.toLocalTime(), Types.TIME),
+        conversion(timestamp, Types.VARCHAR, "2020-01-02 03:04:05.123456789", Types.VARCHAR),
+        conversion(
+            new java.util.Date(timestamp.getTime()),
+            Types.TIMESTAMP,
+            dateTime.withNano(123_000_000),
+            Types.TIMESTAMP),
+        conversion("2020-01-02", Types.DATE, date, Types.DATE),
+        conversion("03:04:05", Types.TIME, LocalTime.of(3, 4, 5), Types.TIME),
+        conversion("2020-01-02 03:04:05.123456789", Types.TIMESTAMP, dateTime, Types.TIMESTAMP),
+        conversion(
+            "03:04:05+02:00", Types.TIME_WITH_TIMEZONE, offsetTime, Types.TIME_WITH_TIMEZONE),
+        conversion(
+            "2020-01-02T03:04:05+05:30",
+            Types.TIMESTAMP_WITH_TIMEZONE,
+            offsetDateTime,
+            Types.TIMESTAMP_WITH_TIMEZONE),
+        // Other targets leave the value as fromJava(Object) makes it.
+        conversion(date, Types.INTEGER, date, Types.DATE),
+        conversion(5, Types.VARCHAR, 5, Types.INTEGER),
+        conversion("text", Types.VARCHAR, "text", Types.VARCHAR));
+  }
+
+  @ParameterizedTest
+  @MethodSource
+  public void testConversionNotInTheTable(final Object value, final int target) {
+    assertThrows(
+        SQLFeatureNotSupportedException.class, () -> SqlValueFactory.fromJava(value, target));
+  }
+
+  private static Stream<Arguments> testConversionNotInTheTable() {
+    return Stream.of(
+        Arguments.of(LocalDate.of(2020, 1, 2), Types.TIME),
+        Arguments.of(LocalDate.of(2020, 1, 2), Types.TIMESTAMP),
+        Arguments.of(LocalTime.of(3, 4, 5), Types.DATE),
+        Arguments.of(LocalDateTime.of(2020, 1, 2, 3, 4), Types.TIMESTAMP_WITH_TIMEZONE),
+        Arguments.of(OffsetTime.of(3, 4, 5, 0, ZoneOffset.UTC), Types.TIME),
+        Arguments.of(OffsetDateTime.of(2020, 1, 2, 3, 4, 5, 0, ZoneOffset.UTC), Types.TIMESTAMP),
+        Arguments.of(OffsetDateTime.of(2020, 1, 2, 3, 4, 5, 0, ZoneOffset.UTC), Types.DATE),
+        Arguments.of(Timestamp.valueOf("2020-01-02 03:04:05"), Types.TIMESTAMP_WITH_TIMEZONE),
+        Arguments.of(5, Types.DATE),
+        Arguments.of(5L, Types.TIMESTAMP),
+        Arguments.of(new byte[] {1}, Types.TIME),
+        Arguments.of(UUID.randomUUID(), Types.TIME_WITH_TIMEZONE));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"not a date", "2020-13-45", ""})
+  public void testStringThatIsNotADateIsRejected(final String text) {
+    final SQLException e =
+        assertThrows(SQLException.class, () -> SqlValueFactory.fromJava(text, Types.DATE));
+    assertFalse(e instanceof SQLFeatureNotSupportedException);
+    assertThrows(SQLException.class, () -> SqlValueFactory.fromJava(text, Types.TIMESTAMP));
+    assertThrows(SQLException.class, () -> SqlValueFactory.fromJava(text, Types.TIME));
+    assertThrows(
+        SQLException.class, () -> SqlValueFactory.fromJava(text, Types.TIMESTAMP_WITH_TIMEZONE));
+  }
+
+  @Test
+  public void testNullWithATargetType() throws SQLException {
+    assertInstanceOf(SqlNull.class, SqlValueFactory.fromJava(null, Types.DATE));
+  }
+
+  @Test
+  public void testIsDateTimeType() {
+    for (int type :
+        new int[] {
+          Types.DATE,
+          Types.TIME,
+          Types.TIMESTAMP,
+          Types.TIME_WITH_TIMEZONE,
+          Types.TIMESTAMP_WITH_TIMEZONE
+        }) {
+      assertTrue(SqlValueFactory.isDateTimeType(type));
+    }
+    assertFalse(SqlValueFactory.isDateTimeType(Types.VARCHAR));
+    assertFalse(SqlValueFactory.isDateTimeType(Types.INTEGER));
   }
 }

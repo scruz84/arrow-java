@@ -28,16 +28,23 @@ import java.net.JarURLConnection;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
+import javax.tools.JavaCompiler;
+import javax.tools.ToolProvider;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Check the content of the JDBC driver jar
@@ -147,6 +154,120 @@ public class ITDriverJarValidation {
       } catch (InvocationTargetException e) {
         throw e.getCause();
       }
+    }
+  }
+
+  private static final String DIALECT_SERVICE =
+      "META-INF/services/org.apache.arrow.driver.jdbc.dialect.SqlDialect";
+
+  /** The built-in dialect must be listed by its real name, not a relocated one. */
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
+  public void dialectServiceFileIsNotRelocated() throws IOException {
+    try (JarFile jar = new JarFile(getJdbcJarFile())) {
+      final JarEntry entry = jar.getJarEntry(DIALECT_SERVICE);
+      assertNotNull(entry, DIALECT_SERVICE + " is missing from the jar");
+      final String content =
+          new String(jar.getInputStream(entry).readAllBytes(), StandardCharsets.UTF_8);
+      Assertions.assertTrue(
+          content.contains("org.apache.arrow.driver.jdbc.dialect.AnsiSqlDialect"), content);
+      Assertions.assertFalse(content.contains(".shaded."), content);
+    }
+  }
+
+  /** Dialect authors compile against the dialect classes, so they must not expose shaded types. */
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
+  public void dialectApiDoesNotExposeShadedTypes() throws Exception {
+    try (URLClassLoader driverClassLoader =
+        new URLClassLoader(
+            new URL[] {getJdbcJarFile().toURI().toURL()}, ClassLoader.getPlatformClassLoader())) {
+      for (String name :
+          List.of(
+              "org.apache.arrow.driver.jdbc.dialect.SqlDialect",
+              "org.apache.arrow.driver.jdbc.dialect.SqlDialectRegistry",
+              "org.apache.arrow.driver.jdbc.dialect.SqlLexicalRules",
+              "org.apache.arrow.driver.jdbc.dialect.ScannedSql",
+              "org.apache.arrow.driver.jdbc.dialect.value.SqlValue",
+              "org.apache.arrow.driver.jdbc.dialect.value.SqlType",
+              "org.apache.arrow.driver.jdbc.dialect.value.SqlArray",
+              "org.apache.arrow.driver.jdbc.dialect.value.SqlRow")) {
+        final Class<?> type = driverClassLoader.loadClass(name);
+        for (Method method : type.getDeclaredMethods()) {
+          assertNotShaded(method.getReturnType(), method);
+          for (Class<?> parameter : method.getParameterTypes()) {
+            assertNotShaded(parameter, method);
+          }
+        }
+      }
+    }
+  }
+
+  private static void assertNotShaded(Class<?> type, Method method) {
+    Assertions.assertFalse(
+        type.getName().contains(".shaded."), type.getName() + " is exposed by " + method);
+  }
+
+  /**
+   * Compile a dialect outside the jar, against the jar only, and check the driver discovers it
+   * through its service file, as a user's own jar would be.
+   */
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
+  public void customDialectOutsideTheJarIsDiscovered(@TempDir Path directory) throws Exception {
+    final JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+    assertNotNull(compiler, "These tests need a JDK");
+
+    final Path source = directory.resolve("src/it/ItDialect.java");
+    Files.createDirectories(source.getParent());
+    Files.writeString(
+        source,
+        "package it;\n"
+            + "import org.apache.arrow.driver.jdbc.dialect.SqlDialect;\n"
+            + "public class ItDialect implements SqlDialect {\n"
+            + "  public String name() { return \"it\"; }\n"
+            + "  public String formatBoolean(boolean b) { return b ? \"1\" : \"0\"; }\n"
+            + "}\n");
+    final Path classes = Files.createDirectories(directory.resolve("classes"));
+    final int result =
+        compiler.run(
+            null,
+            null,
+            null,
+            "-classpath",
+            getJdbcJarFile().getAbsolutePath(),
+            "-d",
+            classes.toString(),
+            source.toString());
+    assertEquals(0, result, "The dialect did not compile against the driver jar");
+
+    final Path services = Files.createDirectories(classes.resolve("META-INF/services"));
+    Files.writeString(
+        services.resolve("org.apache.arrow.driver.jdbc.dialect.SqlDialect"), "it.ItDialect\n");
+
+    final Thread thread = Thread.currentThread();
+    final ClassLoader original = thread.getContextClassLoader();
+    try (URLClassLoader loader =
+        new URLClassLoader(
+            new URL[] {getJdbcJarFile().toURI().toURL(), classes.toUri().toURL()},
+            // The platform loader sees java.sql but none of the test classpath.
+            ClassLoader.getPlatformClassLoader())) {
+      thread.setContextClassLoader(loader);
+      final Method resolve =
+          loader
+              .loadClass("org.apache.arrow.driver.jdbc.dialect.SqlDialectRegistry")
+              .getMethod("resolve", String.class, String.class);
+
+      final Object custom = resolve.invoke(null, "it", null);
+      assertEquals("it.ItDialect", custom.getClass().getName());
+      assertEquals(
+          "1", custom.getClass().getMethod("formatBoolean", boolean.class).invoke(custom, true));
+
+      final Object ansi = resolve.invoke(null, "ansi", null);
+      assertEquals(
+          "org.apache.arrow.driver.jdbc.dialect.AnsiSqlDialect", ansi.getClass().getName());
+    } finally {
+      thread.setContextClassLoader(original);
     }
   }
 
