@@ -278,8 +278,9 @@ ANSI SQL unless the ``dialect`` property says otherwise:
      - ``TIMESTAMP WITH TIME ZONE '2024-01-31 10:15:30+02:00'``
    * - ``Duration``, ``Period``, Arrow ``PeriodDuration``
      - ``INTERVAL '1-2' YEAR TO MONTH`` or
-       ``INTERVAL '3 04:05:06.789' DAY TO SECOND``.  ANSI SQL cannot mix
-       months with days or time in one literal.
+       ``INTERVAL '3 04:05:06.789' DAY TO SECOND``.  A negative interval has
+       its sign inside the quotes, ``INTERVAL '-1-2' YEAR TO MONTH``.  ANSI
+       SQL cannot mix months with days or time in one literal.
    * - ``UUID``
      - a string literal
    * - ``java.sql.Array``, Java arrays, collections

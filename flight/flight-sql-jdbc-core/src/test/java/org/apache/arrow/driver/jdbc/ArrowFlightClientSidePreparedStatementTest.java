@@ -54,6 +54,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.Period;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Calendar;
@@ -264,6 +265,23 @@ public class ArrowFlightClientSidePreparedStatementTest {
       ps.setObject(7, new int[] {1, 2});
       try (final ResultSet rs = ps.executeQuery()) {
         assertSingleRow(rs, 7);
+      }
+    }
+  }
+
+  @Test
+  public void testNegativeIntervalsCarryTheirSignInsideTheQuotes() throws Exception {
+    addQuery(
+        "SELECT id FROM tneg WHERE a = INTERVAL '-0 05:00:00' DAY TO SECOND"
+            + " AND b = INTERVAL '-1-2' YEAR TO MONTH",
+        91);
+    try (final Connection connection = FLIGHT_SERVER_TEST_EXTENSION.getConnection(ALL_CLIENT_SIDE);
+        final PreparedStatement ps =
+            prepare(connection, "SELECT id FROM tneg WHERE a = ? AND b = ?")) {
+      ps.setObject(1, Duration.ofHours(-5));
+      ps.setObject(2, Period.ofMonths(-14));
+      try (final ResultSet rs = ps.executeQuery()) {
+        assertSingleRow(rs, 91);
       }
     }
   }

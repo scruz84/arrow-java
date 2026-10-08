@@ -196,10 +196,10 @@ public class AnsiSqlDialectTest {
   @Test
   public void testYearMonthIntervals() throws SQLException {
     assertEquals("INTERVAL '1-2' YEAR TO MONTH", dialect.render(new SqlIntervalValue(14, 0, 0)));
-    assertEquals("INTERVAL -'1-2' YEAR TO MONTH", dialect.render(new SqlIntervalValue(-14, 0, 0)));
+    assertEquals("INTERVAL '-1-2' YEAR TO MONTH", dialect.render(new SqlIntervalValue(-14, 0, 0)));
     assertEquals("INTERVAL '0-5' YEAR TO MONTH", dialect.formatIntervalYearMonth(5));
     assertEquals(
-        "INTERVAL -'178956970-8' YEAR TO MONTH",
+        "INTERVAL '-178956970-8' YEAR TO MONTH",
         dialect.formatIntervalYearMonth(Integer.MIN_VALUE));
   }
 
@@ -210,12 +210,12 @@ public class AnsiSqlDialectTest {
         "INTERVAL '3 04:05:06.789' DAY TO SECOND",
         dialect.render(new SqlIntervalValue(0, 3, time)));
     assertEquals(
-        "INTERVAL -'3 04:05:06.789' DAY TO SECOND",
+        "INTERVAL '-3 04:05:06.789' DAY TO SECOND",
         dialect.render(new SqlIntervalValue(0, -3, -time)));
     assertEquals(
         "INTERVAL '0 00:00:00' DAY TO SECOND", dialect.render(new SqlIntervalValue(0, 0, 0)));
     assertEquals(
-        "INTERVAL -'0 00:00:01.5' DAY TO SECOND",
+        "INTERVAL '-0 00:00:01.5' DAY TO SECOND",
         dialect.render(new SqlIntervalValue(0, 0, -1_500_000_000L)));
   }
 

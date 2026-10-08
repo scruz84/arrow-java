@@ -227,19 +227,26 @@ public interface SqlDialect {
         + "'";
   }
 
-  /** An interval of years and months: {@code INTERVAL '1-2' YEAR TO MONTH}. */
+  /**
+   * An interval of years and months: {@code INTERVAL '1-2' YEAR TO MONTH}. A negative interval
+   * carries its sign inside the quotes, {@code INTERVAL '-1-2' YEAR TO MONTH}, which the standard
+   * allows and which more databases parse than a sign in front of the quotes.
+   */
   default String formatIntervalYearMonth(int totalMonths) throws SQLException {
     final long abs = Math.abs((long) totalMonths);
-    return "INTERVAL "
+    return "INTERVAL '"
         + (totalMonths < 0 ? "-" : "")
-        + "'"
         + abs / 12
         + "-"
         + abs % 12
         + "' YEAR TO MONTH";
   }
 
-  /** An interval of days and time: {@code INTERVAL '3 04:05:06.789' DAY TO SECOND}. */
+  /**
+   * An interval of days and time: {@code INTERVAL '3 04:05:06.789' DAY TO SECOND}. A negative
+   * interval carries its sign inside the quotes, as in {@link #formatIntervalYearMonth}, and the
+   * sign applies to the whole value.
+   */
   default String formatIntervalDayTime(long days, long nanos) throws SQLException {
     if ((days < 0 && nanos > 0) || (days > 0 && nanos < 0)) {
       throw new SQLFeatureNotSupportedException(
@@ -250,9 +257,8 @@ public interface SqlDialect {
     long absNanos = Math.abs(nanos);
     absDays += absNanos / SqlLiterals.NANOS_PER_DAY;
     absNanos %= SqlLiterals.NANOS_PER_DAY;
-    return "INTERVAL "
+    return "INTERVAL '"
         + (negative ? "-" : "")
-        + "'"
         + absDays
         + " "
         + SqlLiterals.timeText(LocalTime.ofNanoOfDay(absNanos))
