@@ -31,6 +31,7 @@ public final class SqlLexicalRules {
   private final boolean nestedBlockComments;
   private final boolean backtickIdentifiers;
   private final boolean bracketIdentifiers;
+  private final boolean doubleSlashComments;
   private final boolean doubleQuestionMarkEscape;
 
   private SqlLexicalRules(Builder builder) {
@@ -39,6 +40,7 @@ public final class SqlLexicalRules {
     this.nestedBlockComments = builder.nestedBlockComments;
     this.backtickIdentifiers = builder.backtickIdentifiers;
     this.bracketIdentifiers = builder.bracketIdentifiers;
+    this.doubleSlashComments = builder.doubleSlashComments;
     this.doubleQuestionMarkEscape = builder.doubleQuestionMarkEscape;
   }
 
@@ -77,6 +79,11 @@ public final class SqlLexicalRules {
     return bracketIdentifiers;
   }
 
+  /** Whether {@code //} starts a comment that runs to the end of the line (Denodo). */
+  public boolean doubleSlashComments() {
+    return doubleSlashComments;
+  }
+
   /** Whether {@code ??} stands for a literal {@code ?} instead of two parameters. */
   public boolean doubleQuestionMarkEscape() {
     return doubleQuestionMarkEscape;
@@ -89,6 +96,7 @@ public final class SqlLexicalRules {
     private boolean nestedBlockComments;
     private boolean backtickIdentifiers;
     private boolean bracketIdentifiers;
+    private boolean doubleSlashComments;
     private boolean doubleQuestionMarkEscape;
 
     private Builder() {}
@@ -115,6 +123,11 @@ public final class SqlLexicalRules {
 
     public Builder bracketIdentifiers(boolean value) {
       this.bracketIdentifiers = value;
+      return this;
+    }
+
+    public Builder doubleSlashComments(boolean value) {
+      this.doubleSlashComments = value;
       return this;
     }
 
