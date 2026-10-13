@@ -78,6 +78,8 @@ final class SqlParameterScanner {
         case '/':
           if (i + 1 < n && sql.charAt(i + 1) == '*') {
             i = copyBlockComment(sql, i, rules.nestedBlockComments(), current);
+          } else if (rules.doubleSlashComments() && i + 1 < n && sql.charAt(i + 1) == '/') {
+            i = copyLineComment(sql, i, current);
           } else {
             current.append(c);
             i++;
@@ -121,7 +123,8 @@ final class SqlParameterScanner {
    * opening parentheses.
    *
    * @param sql the statement.
-   * @param rules the lexical rules of the dialect, which tell whether block comments nest.
+   * @param rules the lexical rules of the dialect, which tell whether block comments nest and
+   *     whether {@code //} starts a comment.
    * @return the keyword, or an empty string when the statement does not start with one.
    */
   static String leadingKeyword(String sql, SqlLexicalRules rules) {
@@ -135,6 +138,8 @@ final class SqlParameterScanner {
         i = copyLineComment(sql, i, new StringBuilder());
       } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
         i = copyBlockComment(sql, i, rules.nestedBlockComments(), new StringBuilder());
+      } else if (rules.doubleSlashComments() && c == '/' && i + 1 < n && sql.charAt(i + 1) == '/') {
+        i = copyLineComment(sql, i, new StringBuilder());
       } else {
         break;
       }
