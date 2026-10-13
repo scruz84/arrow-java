@@ -29,6 +29,7 @@ import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.List;
 import org.apache.arrow.driver.jdbc.dialect.AnsiSqlDialect;
+import org.apache.arrow.driver.jdbc.dialect.DenodoSqlDialect;
 import org.apache.arrow.driver.jdbc.dialect.SqlDialect;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -132,6 +133,12 @@ public class SqlDialectRegistryTest {
     assertInstanceOf(AnsiSqlDialect.class, SqlDialectRegistry.resolve("ansi", null));
     assertInstanceOf(AnsiSqlDialect.class, SqlDialectRegistry.resolve("ANSI", null));
     assertInstanceOf(AnsiSqlDialect.class, SqlDialectRegistry.resolve("ansi", ""));
+  }
+
+  @Test
+  public void testDenodoDialectIsDiscoveredByName() throws SQLException {
+    assertInstanceOf(DenodoSqlDialect.class, SqlDialectRegistry.resolve("denodo", null));
+    assertInstanceOf(DenodoSqlDialect.class, SqlDialectRegistry.resolve("Denodo", null));
   }
 
   @Test

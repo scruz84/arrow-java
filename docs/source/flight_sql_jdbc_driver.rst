@@ -166,7 +166,8 @@ case-sensitive. The supported parameters are:
    * - dialect
      - ansi
      - The name of the SQL dialect used to write parameter values into the
-       SQL text. Only used for client-side statements.
+       SQL text. Only used for client-side statements. The built-in dialects
+       are ``ansi`` and ``denodo``. See :ref:`flight-sql-jdbc-dialects`.
 
    * - dialectClass
      - null
@@ -359,6 +360,67 @@ has no type, for example.  Some services also do real work when asked for the
 schema.  Set ``clientSideMetadataProbe=false`` to turn this off.
 ``ParameterMetaData`` always reports unknown parameter types.
 
+.. _flight-sql-jdbc-dialects:
+
+Built-in dialects
+-----------------
+
+``ansi`` (the default)
+  Writes the literals of the table above.
+
+``denodo``
+  For Denodo Virtual DataPort.  The values are written as ANSI SQL, except
+  for these differences:
+
+  .. list-table::
+     :header-rows: 1
+
+     * - Java value
+       - ``denodo``
+     * - ``String`` set with ``setNString``
+       - ``'...'``.  There is no ``N'...'`` form, and all text is Unicode.
+     * - ``byte[]``, ``Blob``, binary streams
+       - ``'0a1b'``, a string of hexadecimal digits.  There is no
+         ``X'...'`` form.  The server turns the string into bytes when it
+         is stored in a blob column.
+     * - NaN and the infinities
+       - ``CAST('NaN' AS DOUBLE PRECISION)``,
+         ``CAST('Infinity' AS DOUBLE PRECISION)`` and
+         ``CAST('-Infinity' AS DOUBLE PRECISION)``
+     * - ``java.sql.Struct``, ``SQLData``
+       - ``ROW(1, 'a')``
+     * - ``java.sql.Array``, Java arrays, collections
+       - ``{ROW(1), ROW(2)}``: an array of rows, where a scalar element is a
+         row of one field.  An array of structs is
+         ``{ROW(1, 'a'), ROW(2, 'b')}``, and an empty array is ``{}``.  A
+         null element is a row of nulls.
+
+  Inside ``ROW(...)`` the Denodo grammar only takes plain literals, so
+  there the driver writes dates, times, intervals, UUIDs, blobs and
+  infinities as text, which the type of the field converts, and a negative
+  number has no parentheses:
+
+  .. code-block:: text
+
+     ROW('2024-01-31', '2024-01-31 10:15:30.123456789',
+         '2024-01-31 10:15:30+02:00', '1-2', -5, -1.5, 'NaN', '0a1b')
+
+  Denodo does not accept some values, and the driver reports them when they
+  are set or when the statement runs:
+
+  * a time with a time zone inside a row or an array, as the server would
+    drop the offset without telling;
+  * a null element of an array of arrays;
+  * an interval that mixes months with days or time;
+  * dates before year 1 or after year 9999.
+
+  Backticks delimit identifiers, ``//`` starts a comment that runs to the
+  end of the line, and a backslash is an ordinary character in a string.  A
+  ``?`` inside any of them is not a parameter.  A null is always written as
+  ``NULL``, without a ``CAST``.  The ``?`` of a hand-written ``ROW(?, ?)``
+  or ``{ROW(?)}`` cannot take dates or negative numbers, as their literals
+  are not valid there: set the whole ``Struct`` or ``Array`` as one parameter.
+
 Writing a dialect
 -----------------
 
@@ -404,6 +466,10 @@ objects.  ``render(SqlValue)`` is the entry point, and arrays and rows render
 their elements through it, so an override applies at every level.  A
 dialect can also override ``classify(String)`` to decide what is a query and
 ``metadataProbeSql(ScannedSql)`` to change the metadata probe.
+
+``lexicalRules()`` also tells the driver which constructs can hide a ``?``:
+backslash escapes, ``$tag$`` quoting, nested block comments, backtick or
+bracket identifiers, ``//`` comments and the ``??`` escape.
 
 The default ``formatString`` doubles the quotes of a string.  It also doubles
 the backslashes when ``lexicalRules()`` says that a backslash is an escape,

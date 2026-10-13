@@ -450,6 +450,29 @@ public class ArrowFlightClientSidePreparedStatementTest {
   }
 
   @Test
+  public void testDenodoDialectWritesItsOwnLiterals() throws Exception {
+    // Denodo has no X'..' and N'..' forms, and writes NaN as a cast.
+    final String expected =
+        "SELECT id FROM t40 // is this ?\n"
+            + "WHERE a = '0a1b' AND b = 'abc' AND c = CAST('NaN' AS DOUBLE PRECISION)";
+    addQuery(expected, 40);
+    try (final Connection connection =
+            FLIGHT_SERVER_TEST_EXTENSION.getConnection(
+                Map.of("disableServerPreparedStatements", true, "dialect", "denodo"));
+        final PreparedStatement ps =
+            prepare(
+                connection, "SELECT id FROM t40 // is this ?\nWHERE a = ? AND b = ? AND c = ?")) {
+      ps.setBytes(1, new byte[] {0x0a, 0x1b});
+      ps.setNString(2, "abc");
+      ps.setDouble(3, Double.NaN);
+      try (final ResultSet rs = ps.executeQuery()) {
+        assertSingleRow(rs, 40);
+      }
+    }
+    assertEquals(Collections.singletonList(expected), PRODUCER.getReceivedStatements());
+  }
+
+  @Test
   public void testServerPreparedStatementsStayTheDefault() throws Exception {
     try (final Connection connection = FLIGHT_SERVER_TEST_EXTENSION.getConnection(false)) {
       addQuery("SELECT id FROM t18", 18);
