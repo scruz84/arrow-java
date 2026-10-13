@@ -190,19 +190,15 @@ public class ArrowFlightJdbcTimeStampVectorAccessor extends ArrowFlightJdbcAcces
   }
 
   /**
-   * Apply offset to LocalDateTime to get a Timestamp with legacy behavior. Previously we applied
-   * the offset to the LocalDateTime even if the underlying Vector did not have a TZ. In order to
-   * support java.time.* accessors, we fixed this so we only apply the offset if the underlying
-   * vector includes TZ info. In order to maintain backward compatibility, we apply the offset if
-   * needed for getDate, getTime, and getTimestamp.
+   * Build a Timestamp from the wall-clock value of the vector. When the vector has no TZ info, the
+   * stored value is a wall-clock date and time with no zone attached, so a Calendar (if provided)
+   * defines the zone in which that wall-clock is interpreted, as stated by the JDBC contract of
+   * getTimestamp(Calendar), getDate(Calendar) and getTime(Calendar). Vectors with TZ info are
+   * already adjusted to the Calendar in {@link #getLocalDateTime(Calendar)}.
    */
   private Timestamp getTimestampWithOffset(Calendar calendar, LocalDateTime localDateTime) {
     if (calendar != null && !isZoned) {
-      TimeZone timeZone = calendar.getTimeZone();
-      long millis = Timestamp.valueOf(localDateTime).getTime();
-      localDateTime =
-          localDateTime.minus(
-              timeZone.getOffset(millis) - this.timeZone.getOffset(millis), ChronoUnit.MILLIS);
+      return Timestamp.from(localDateTime.atZone(calendar.getTimeZone().toZoneId()).toInstant());
     }
     return Timestamp.valueOf(localDateTime);
   }

@@ -24,7 +24,9 @@ import static org.hamcrest.MatcherAssert.assertThat;
 
 import java.sql.Date;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Calendar;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
@@ -40,6 +42,7 @@ import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.util.Text;
 import org.hamcrest.CoreMatchers;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -52,6 +55,14 @@ public class ArrowFlightJdbcDateVectorAccessorTest {
   @RegisterExtension
   public static RootAllocatorTestExtension rootAllocatorTestExtension =
       new RootAllocatorTestExtension();
+
+  /**
+   * The test JVM runs on UTC. Use another default zone, with DST, so that the tests are able to
+   * tell the JVM default zone apart from the Calendar zone and from UTC.
+   */
+  private static final String DEFAULT_TIME_ZONE = "Europe/Madrid";
+
+  private TimeZone originalDefaultTimeZone;
 
   private BaseFixedWidthVector vector;
 
@@ -85,8 +96,15 @@ public class ArrowFlightJdbcDateVectorAccessorTest {
     this.vector = vectorSupplier.get();
   }
 
+  @BeforeEach
+  public void setUpDefaultTimeZone() {
+    originalDefaultTimeZone = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone(DEFAULT_TIME_ZONE));
+  }
+
   @AfterEach
   public void tearDown() {
+    TimeZone.setDefault(originalDefaultTimeZone);
     this.vector.close();
   }
 
@@ -126,7 +144,9 @@ public class ArrowFlightJdbcDateVectorAccessorTest {
           final Timestamp resultWithoutCalendar = accessor.getTimestamp(null);
           final Timestamp result = accessor.getTimestamp(calendar);
 
-          long offset = timeZone.getOffset(resultWithoutCalendar.getTime());
+          long offset =
+              timeZone.getOffset(result.getTime())
+                  - TimeZone.getDefault().getOffset(resultWithoutCalendar.getTime());
 
           assertThat(resultWithoutCalendar.getTime() - result.getTime(), is(offset));
           assertThat(accessor.wasNull(), is(false));
@@ -168,7 +188,9 @@ public class ArrowFlightJdbcDateVectorAccessorTest {
           final Date resultWithoutCalendar = accessor.getDate(null);
           final Date result = accessor.getDate(calendar);
 
-          long offset = timeZone.getOffset(resultWithoutCalendar.getTime());
+          long offset =
+              timeZone.getOffset(result.getTime())
+                  - TimeZone.getDefault().getOffset(resultWithoutCalendar.getTime());
 
           assertThat(resultWithoutCalendar.getTime() - result.getTime(), is(offset));
           assertThat(accessor.wasNull(), is(false));
@@ -195,7 +217,8 @@ public class ArrowFlightJdbcDateVectorAccessorTest {
       long value = ((Number) object).longValue();
       TimeUnit timeUnit = getTimeUnitForVector(vector);
       long millis = timeUnit.toMillis(value);
-      expectedTimestamp = new Timestamp(millis);
+      expectedTimestamp =
+          Timestamp.valueOf(LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneOffset.UTC));
     }
     return expectedTimestamp;
   }
@@ -236,6 +259,8 @@ public class ArrowFlightJdbcDateVectorAccessorTest {
         (accessor, currentRow) -> {
           final TimeZone defaultTz = TimeZone.getDefault();
           try {
+            // The string has no TZ, the Date/Time is checked against it using UTC as default TZ
+            TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
             final String string =
                 accessor.getString(); // Should always be UTC as no calendar is provided
 

@@ -75,6 +75,36 @@ public class DateTimeUtilsTest {
   }
 
   @Test
+  public void testShouldGetEpochMilliOfWallClockInCalendarTimeZone() {
+    final TimeZone currentTimezone = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone("Asia/Kolkata"));
+
+    try {
+      // 2000-06-01 00:00:00 as if UTC, in Vancouver (UTC-7 in June)
+      final long actual =
+          DateTimeUtils.utcWallClockToEpochMilli(
+              positiveEpochMilli, Calendar.getInstance(alternateTimezone));
+      assertThat(actual, is(positiveEpochMilli + 7 * 3600 * 1000L));
+    } finally {
+      TimeZone.setDefault(currentTimezone);
+    }
+  }
+
+  @Test
+  public void testShouldGetEpochMilliOfWallClockInDefaultTimeZoneWithoutCalendar() {
+    final TimeZone currentTimezone = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone("Asia/Kolkata"));
+
+    try {
+      // 1950-06-01 00:00:00 as if UTC, in Kolkata (UTC+5:30)
+      final long actual = DateTimeUtils.utcWallClockToEpochMilli(negativeEpochMilli, null);
+      assertThat(actual, is(negativeEpochMilli - (5 * 3600 + 30 * 60) * 1000L));
+    } finally {
+      TimeZone.setDefault(currentTimezone);
+    }
+  }
+
+  @Test
   public void testShouldGetTimestampPositive() {
     long epochMilli = positiveEpochMilli;
     final Instant instant = Instant.ofEpochMilli(epochMilli);

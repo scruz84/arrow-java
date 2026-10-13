@@ -50,6 +50,7 @@ import org.apache.arrow.vector.util.Text;
 import org.hamcrest.CoreMatchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -64,6 +65,14 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
   @RegisterExtension
   public static RootAllocatorTestExtension rootAllocatorTestExtension =
       new RootAllocatorTestExtension();
+
+  /**
+   * The test JVM runs on UTC. Use another default zone, with DST, so that the tests are able to
+   * tell the JVM default zone apart from the Calendar zone and from UTC.
+   */
+  private static final String DEFAULT_TIME_ZONE = "Europe/Madrid";
+
+  private TimeZone originalDefaultTimeZone;
 
   private TimeStampVector vector;
 
@@ -163,8 +172,15 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
     this.vector = vectorSupplier.get();
   }
 
+  @BeforeEach
+  public void setUpDefaultTimeZone() {
+    originalDefaultTimeZone = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone(DEFAULT_TIME_ZONE));
+  }
+
   @AfterEach
   public void tearDown() {
+    TimeZone.setDefault(originalDefaultTimeZone);
     this.vector.close();
   }
 
@@ -188,8 +204,6 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
     TimeZone timeZone = TimeZone.getTimeZone(AMERICA_SAO_PAULO);
     Calendar calendar = Calendar.getInstance(timeZone);
 
-    TimeZone timeZoneForVector = getTimeZoneForVector(vector);
-
     accessorIterator.iterate(
         vector,
         (accessor, currentRow) -> {
@@ -197,10 +211,33 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
           final Timestamp result = accessor.getTimestamp(calendar);
 
           long offset =
-              (long) timeZone.getOffset(resultWithoutCalendar.getTime())
-                  - timeZoneForVector.getOffset(resultWithoutCalendar.getTime());
+              getExpectedCalendarOffset(
+                  timeZone, resultWithoutCalendar.getTime(), result.getTime());
 
           assertThat(resultWithoutCalendar.getTime() - result.getTime(), is(offset));
+          assertThat(accessor.wasNull(), is(false));
+        });
+  }
+
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testShouldInterpretVectorWithoutTzAtCalendarTimeZone(
+      Supplier<TimeStampVector> vectorSupplier, String vectorType, String timeZone)
+      throws Exception {
+    setup(vectorSupplier);
+    Assumptions.assumeTrue(timeZone == null);
+    final TimeZone calendarTimeZone = TimeZone.getTimeZone(AMERICA_SAO_PAULO);
+    final Calendar calendar = Calendar.getInstance(calendarTimeZone);
+
+    accessorIterator.iterate(
+        vector,
+        (accessor, currentRow) -> {
+          final LocalDateTime wallClock = (LocalDateTime) vector.getObject(currentRow);
+          final Instant expected = wallClock.atZone(calendarTimeZone.toZoneId()).toInstant();
+
+          assertThat(accessor.getTimestamp(calendar).toInstant(), equalTo(expected));
+          assertThat(accessor.getDate(calendar).getTime(), is(expected.toEpochMilli()));
+          assertThat(accessor.getTime(calendar).getTime(), is(expected.toEpochMilli()));
           assertThat(accessor.wasNull(), is(false));
         });
   }
@@ -329,8 +366,6 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
     TimeZone timeZone = TimeZone.getTimeZone(AMERICA_SAO_PAULO);
     Calendar calendar = Calendar.getInstance(timeZone);
 
-    TimeZone timeZoneForVector = getTimeZoneForVector(vector);
-
     accessorIterator.iterate(
         vector,
         (accessor, currentRow) -> {
@@ -338,8 +373,8 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
           final Date result = accessor.getDate(calendar);
 
           long offset =
-              (long) timeZone.getOffset(resultWithoutCalendar.getTime())
-                  - timeZoneForVector.getOffset(resultWithoutCalendar.getTime());
+              getExpectedCalendarOffset(
+                  timeZone, resultWithoutCalendar.getTime(), result.getTime());
 
           assertThat(resultWithoutCalendar.getTime() - result.getTime(), is(offset));
           assertThat(accessor.wasNull(), is(false));
@@ -377,8 +412,6 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
     TimeZone timeZone = TimeZone.getTimeZone(AMERICA_SAO_PAULO);
     Calendar calendar = Calendar.getInstance(timeZone);
 
-    TimeZone timeZoneForVector = getTimeZoneForVector(vector);
-
     accessorIterator.iterate(
         vector,
         (accessor, currentRow) -> {
@@ -386,8 +419,8 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
           final Time result = accessor.getTime(calendar);
 
           long offset =
-              (long) timeZone.getOffset(resultWithoutCalendar.getTime())
-                  - timeZoneForVector.getOffset(resultWithoutCalendar.getTime());
+              getExpectedCalendarOffset(
+                  timeZone, resultWithoutCalendar.getTime(), result.getTime());
 
           assertThat(resultWithoutCalendar.getTime() - result.getTime(), is(offset));
           assertThat(accessor.wasNull(), is(false));
@@ -404,6 +437,25 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
     assertThat(accessor.wasNull(), is(true));
   }
 
+  /**
+   * Expected difference between the result without Calendar and the result with Calendar.
+   *
+   * <ul>
+   *   <li>Vectors with TZ info are adjusted from the vector TZ to the Calendar TZ.
+   *   <li>Vectors without TZ info hold a wall-clock value, which is interpreted in the default TZ
+   *       when there is no Calendar and in the Calendar TZ otherwise.
+   * </ul>
+   */
+  private long getExpectedCalendarOffset(
+      TimeZone calendarTimeZone, long resultWithoutCalendar, long result) {
+    if (getVectorIsZoned(vector)) {
+      return (long) calendarTimeZone.getOffset(resultWithoutCalendar)
+          - getTimeZoneForVector(vector).getOffset(resultWithoutCalendar);
+    }
+    return (long) calendarTimeZone.getOffset(result)
+        - TimeZone.getDefault().getOffset(resultWithoutCalendar);
+  }
+
   private Timestamp getTimestampForVector(int currentRow, String timeZone) {
     Object object = vector.getObject(currentRow);
 
@@ -413,8 +465,10 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
     } else if (object instanceof Long) {
       TimeUnit timeUnit = getTimeUnitForVector(vector);
       long millis = timeUnit.toMillis((Long) object);
-      long offset = TimeZone.getTimeZone(timeZone).getOffset(millis);
-      expectedTimestamp = new Timestamp(millis + offset);
+      expectedTimestamp =
+          Timestamp.valueOf(
+              LocalDateTime.ofInstant(
+                  Instant.ofEpochMilli(millis), TimeZone.getTimeZone(timeZone).toZoneId()));
     }
     return expectedTimestamp;
   }

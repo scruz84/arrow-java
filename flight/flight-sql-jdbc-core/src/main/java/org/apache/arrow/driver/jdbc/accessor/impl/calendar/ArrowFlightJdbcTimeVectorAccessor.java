@@ -146,7 +146,7 @@ public class ArrowFlightJdbcTimeVectorAccessor extends ArrowFlightJdbcAccessor {
     long value = holder.value;
     long milliseconds = this.timeUnit.toMillis(value);
 
-    return new ArrowFlightJdbcTime(DateTimeUtils.applyCalendarOffset(milliseconds, calendar));
+    return new ArrowFlightJdbcTime(DateTimeUtils.utcWallClockToEpochMilli(milliseconds, calendar));
   }
 
   private LocalTime getLocalTime() {
