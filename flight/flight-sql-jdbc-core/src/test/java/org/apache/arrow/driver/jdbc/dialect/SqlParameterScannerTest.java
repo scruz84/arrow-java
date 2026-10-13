@@ -210,6 +210,27 @@ public class SqlParameterScannerTest {
   }
 
   @Test
+  public void testDoubleSlashIsNotACommentByDefault() {
+    assertEquals(List.of("select 1 // ", ""), segments("select 1 // ?", ANSI));
+  }
+
+  @Test
+  public void testDoubleSlashComments() {
+    final SqlLexicalRules rules = SqlLexicalRules.builder().doubleSlashComments(true).build();
+    assertEquals(List.of("select ", " // what? "), segments("select ? // what? ", rules));
+    assertEquals(List.of("select 1 // what?\n, ", ""), segments("select 1 // what?\n, ?", rules));
+    assertEquals(List.of("select '//', ", ""), segments("select '//', ?", rules));
+    assertEquals(List.of("select 1 / ", ""), segments("select 1 / ?", rules));
+  }
+
+  @Test
+  public void testLeadingKeywordSkipsDoubleSlashComments() {
+    final SqlLexicalRules rules = SqlLexicalRules.builder().doubleSlashComments(true).build();
+    assertEquals("SELECT", SqlParameterScanner.leadingKeyword("// note\nselect 1", rules));
+    assertEquals("", SqlParameterScanner.leadingKeyword("// note\nselect 1"));
+  }
+
+  @Test
   public void testUnterminatedNestedBlockCommentHidesTheRest() {
     final SqlLexicalRules rules = SqlLexicalRules.builder().nestedBlockComments(true).build();
     assertEquals(List.of("/* /* ? */ ? "), segments("/* /* ? */ ? ", rules));
