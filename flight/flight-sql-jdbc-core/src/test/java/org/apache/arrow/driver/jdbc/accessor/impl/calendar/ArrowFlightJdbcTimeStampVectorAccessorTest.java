@@ -30,6 +30,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.Objects;
@@ -298,6 +299,53 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
           rowAccessor.getObject(LocalDateTime.class),
           equalTo(LocalDateTime.parse("2021-10-31T02:30")));
     }
+  }
+
+  private ArrowFlightJdbcTimeStampVectorAccessor setupMilliVectorWithTimeZone(
+      String timeZone, long value) {
+    final TimeStampMilliTZVector tzVector =
+        new TimeStampMilliTZVector("", rootAllocatorTestExtension.getRootAllocator(), timeZone);
+    // closed by tearDown
+    setup(() -> tzVector);
+    tzVector.allocateNew(1);
+    tzVector.set(0, value);
+    tzVector.setValueCount(1);
+    return accessorSupplier.supply(tzVector, () -> 0);
+  }
+
+  @Test
+  public void testShouldSupportTimeZoneAsOffset() throws Exception {
+    final Instant instant = Instant.parse("2021-03-28T00:15:00Z");
+    final ArrowFlightJdbcTimeStampVectorAccessor accessor =
+        setupMilliVectorWithTimeZone("+05:30", instant.toEpochMilli());
+    final ZoneOffset offset = ZoneOffset.ofHoursMinutes(5, 30);
+
+    assertThat(accessor.getObject(Instant.class), equalTo(instant));
+    assertThat(accessor.getObject(OffsetDateTime.class).getOffset(), equalTo(offset));
+    assertThat(accessor.getObject(ZonedDateTime.class).getZone(), equalTo(offset));
+    assertThat(
+        accessor.getObject(LocalDateTime.class), equalTo(LocalDateTime.parse("2021-03-28T05:45")));
+    assertThat(accessor.getTimestamp(null).toInstant(), equalTo(instant));
+  }
+
+  @Test
+  public void testShouldRejectUnknownTimeZone() {
+    final TimeStampMilliTZVector tzVector =
+        new TimeStampMilliTZVector("", rootAllocatorTestExtension.getRootAllocator(), "Not/AZone");
+    // closed by tearDown
+    setup(() -> tzVector);
+
+    assertThrows(IllegalArgumentException.class, () -> accessorSupplier.supply(tzVector, () -> 0));
+  }
+
+  @Test
+  public void testShouldHandleEmptyTimeZoneAsNoTimeZone() throws Exception {
+    final ArrowFlightJdbcTimeStampVectorAccessor accessor =
+        setupMilliVectorWithTimeZone("", Instant.parse("2021-03-28T00:15:00Z").toEpochMilli());
+
+    assertThat(
+        accessor.getObject(LocalDateTime.class), equalTo(LocalDateTime.parse("2021-03-28T00:15")));
+    assertThrows(SQLException.class, () -> accessor.getObject(Instant.class));
   }
 
   @ParameterizedTest

@@ -24,12 +24,14 @@ import java.sql.Date;
 import java.sql.SQLException;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Calendar;
-import java.util.Objects;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
@@ -43,6 +45,7 @@ import org.apache.arrow.vector.util.DateUtility;
 /** Accessor for the Arrow types extending from {@link TimeStampVector}. */
 public class ArrowFlightJdbcTimeStampVectorAccessor extends ArrowFlightJdbcAccessor {
 
+  private final ZoneId zoneId;
   private final TimeZone timeZone;
   private final Getter getter;
   private final TimeUnit timeUnit;
@@ -67,7 +70,8 @@ public class ArrowFlightJdbcTimeStampVectorAccessor extends ArrowFlightJdbcAcces
     // whether the vector included TZ info
     this.isZoned = getVectorIsZoned(vector);
     // non-null, either the vector TZ or default to UTC
-    this.timeZone = getTimeZoneForVector(vector);
+    this.zoneId = getZoneIdForVector(vector);
+    this.timeZone = TimeZone.getTimeZone(this.zoneId);
     this.timeUnit = getTimeUnitForVector(vector);
     this.longToLocalDateTime = getLongToLocalDateTimeForVector(vector, this.timeZone);
   }
@@ -112,7 +116,7 @@ public class ArrowFlightJdbcTimeStampVectorAccessor extends ArrowFlightJdbcAcces
       return null;
     }
 
-    return instant.atZone(this.timeZone.toZoneId());
+    return instant.atZone(this.zoneId);
   }
 
   private OffsetDateTime getOffsetDateTime() {
@@ -261,17 +265,39 @@ public class ArrowFlightJdbcTimeStampVectorAccessor extends ArrowFlightJdbcAcces
   }
 
   protected static TimeZone getTimeZoneForVector(TimeStampVector vector) {
+    return TimeZone.getTimeZone(getZoneIdForVector(vector));
+  }
+
+  /**
+   * Get the time zone of the vector, which is UTC when it does not have one.
+   *
+   * <p>The time zone of an Arrow timestamp is either an IANA name or an offset like "+05:30". Any
+   * other value is rejected, as {@link TimeZone#getTimeZone(String)} would silently turn it into
+   * GMT.
+   */
+  protected static ZoneId getZoneIdForVector(TimeStampVector vector) {
     ArrowType.Timestamp arrowType =
         (ArrowType.Timestamp) vector.getField().getFieldType().getType();
 
-    String timezoneName = Objects.requireNonNullElse(arrowType.getTimezone(), "UTC");
-    return TimeZone.getTimeZone(timezoneName);
+    String timezoneName = arrowType.getTimezone();
+    if (timezoneName == null || timezoneName.isEmpty()) {
+      return ZoneOffset.UTC;
+    }
+
+    try {
+      return ZoneId.of(timezoneName, ZoneId.SHORT_IDS);
+    } catch (DateTimeException e) {
+      throw new IllegalArgumentException(
+          "Unsupported time zone in the timestamp type: '" + timezoneName + "'", e);
+    }
   }
 
   protected static boolean getVectorIsZoned(TimeStampVector vector) {
     ArrowType.Timestamp arrowType =
         (ArrowType.Timestamp) vector.getField().getFieldType().getType();
 
-    return arrowType.getTimezone() != null;
+    // An empty time zone means that there is no time zone info, as a missing one
+    final String timezoneName = arrowType.getTimezone();
+    return timezoneName != null && !timezoneName.isEmpty();
   }
 }
