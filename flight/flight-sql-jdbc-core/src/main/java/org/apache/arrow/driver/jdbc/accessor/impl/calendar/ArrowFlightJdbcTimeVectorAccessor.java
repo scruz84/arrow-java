@@ -23,6 +23,7 @@ import static org.apache.arrow.driver.jdbc.accessor.impl.calendar.ArrowFlightJdb
 import java.sql.SQLException;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.time.DateTimeException;
 import java.time.LocalTime;
 import java.util.Calendar;
 import java.util.concurrent.TimeUnit;
@@ -149,8 +150,18 @@ public class ArrowFlightJdbcTimeVectorAccessor extends ArrowFlightJdbcAccessor {
     return new ArrowFlightJdbcTime(DateTimeUtils.utcWallClockToEpochMilli(milliseconds, calendar));
   }
 
-  private LocalTime getLocalTime() {
-    return getTime(null).toLocalTime();
+  private LocalTime getLocalTime() throws SQLException {
+    fillHolder();
+    if (this.wasNull) {
+      return null;
+    }
+
+    try {
+      // java.sql.Time only has a precision of milliseconds, the value of the vector is used instead
+      return LocalTime.ofNanoOfDay(this.timeUnit.toNanos(holder.value));
+    } catch (DateTimeException e) {
+      throw new SQLException("Invalid time of day: " + holder.value, e);
+    }
   }
 
   private void fillHolder() {

@@ -25,6 +25,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Calendar;
@@ -128,6 +129,29 @@ public class ArrowFlightJdbcDateVectorAccessorTest {
         vector,
         accessor -> accessor.getObject(Date.class),
         (accessor, currentRow) -> is(new Date(getTimestampForVector(currentRow).getTime())));
+  }
+
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testShouldGetObjectWithLocalDateClassReturnValidLocalDate(
+      Supplier<BaseFixedWidthVector> vectorSupplier) throws Exception {
+    setup(vectorSupplier);
+    accessorIterator.assertAccessorGetter(
+        vector,
+        accessor -> accessor.getObject(LocalDate.class),
+        (accessor, currentRow) ->
+            is(getTimestampForVector(currentRow).toLocalDateTime().toLocalDate()));
+  }
+
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testShouldGetObjectWithLocalDateClassReturnNull(
+      Supplier<BaseFixedWidthVector> vectorSupplier) throws Exception {
+    setup(vectorSupplier);
+    vector.setNull(0);
+    ArrowFlightJdbcDateVectorAccessor accessor = accessorSupplier.supply(vector, () -> 0);
+    assertThat(accessor.getObject(LocalDate.class), CoreMatchers.equalTo(null));
+    assertThat(accessor.wasNull(), is(true));
   }
 
   @ParameterizedTest

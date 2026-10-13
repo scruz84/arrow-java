@@ -26,6 +26,7 @@ import java.sql.Time;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.util.Calendar;
 import java.util.TimeZone;
@@ -46,6 +47,7 @@ import org.apache.arrow.vector.util.Text;
 import org.hamcrest.CoreMatchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -134,6 +136,56 @@ public class ArrowFlightJdbcTimeVectorAccessorTest {
         vector,
         accessor -> accessor.getTimestamp(null),
         (accessor, currentRow) -> is(getTimestampForVector(currentRow)));
+  }
+
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testShouldGetObjectWithLocalTimeClassReturnValidLocalTime(
+      Supplier<BaseFixedWidthVector> vectorSupplier) throws Exception {
+    setup(vectorSupplier);
+    accessorIterator.assertAccessorGetter(
+        vector,
+        accessor -> accessor.getObject(LocalTime.class),
+        (accessor, currentRow) ->
+            is(getTimestampForVector(currentRow).toLocalDateTime().toLocalTime()));
+  }
+
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testShouldGetObjectWithLocalTimeClassReturnNull(
+      Supplier<BaseFixedWidthVector> vectorSupplier) throws Exception {
+    setup(vectorSupplier);
+    vector.setNull(0);
+    ArrowFlightJdbcTimeVectorAccessor accessor = accessorSupplier.supply(vector, () -> 0);
+    assertThat(accessor.getObject(LocalTime.class), CoreMatchers.equalTo(null));
+    assertThat(accessor.wasNull(), is(true));
+  }
+
+  @Test
+  public void testShouldGetObjectWithLocalTimeClassKeepSubMillisecondPrecision() throws Exception {
+    final LocalTime time = LocalTime.of(10, 15, 30, 123_456_789);
+    final var allocator = rootAllocatorTestExtension.getRootAllocator();
+    final TimeNanoVector nano = new TimeNanoVector("", allocator);
+    // closed by tearDown
+    setup(() -> nano);
+    nano.allocateNew(1);
+    nano.set(0, time.toNanoOfDay());
+    nano.setValueCount(1);
+
+    try (TimeMicroVector micro = new TimeMicroVector("", allocator)) {
+      micro.allocateNew(1);
+      micro.set(0, time.toNanoOfDay() / 1_000);
+      micro.setValueCount(1);
+
+      assertThat(
+          new ArrowFlightJdbcTimeVectorAccessor(nano, () -> 0, (boolean b) -> {})
+              .getObject(LocalTime.class),
+          is(time));
+      assertThat(
+          new ArrowFlightJdbcTimeVectorAccessor(micro, () -> 0, (boolean b) -> {})
+              .getObject(LocalTime.class),
+          is(time.withNano(123_456_000)));
+    }
   }
 
   @ParameterizedTest

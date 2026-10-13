@@ -172,6 +172,12 @@ public class ArrowFlightJdbcDateVectorAccessor extends ArrowFlightJdbcAccessor {
   }
 
   private LocalDate getLocalDate() {
-    return getDate(null).toLocalDate();
+    fillHolder();
+    if (this.wasNull) {
+      return null;
+    }
+
+    return LocalDate.ofEpochDay(
+        Math.floorDiv(this.timeUnit.toMillis(holder.value), MILLIS_PER_DAY));
   }
 }
