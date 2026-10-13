@@ -41,6 +41,7 @@ import org.apache.arrow.driver.jdbc.accessor.impl.text.ArrowFlightJdbcVarCharVec
 import org.apache.arrow.driver.jdbc.utils.AccessorTestUtils;
 import org.apache.arrow.driver.jdbc.utils.RootAllocatorTestExtension;
 import org.apache.arrow.vector.TimeStampMicroVector;
+import org.apache.arrow.vector.TimeStampMilliTZVector;
 import org.apache.arrow.vector.TimeStampMilliVector;
 import org.apache.arrow.vector.TimeStampNanoVector;
 import org.apache.arrow.vector.TimeStampSecVector;
@@ -51,6 +52,7 @@ import org.hamcrest.CoreMatchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -193,7 +195,7 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
     accessorIterator.assertAccessorGetter(
         vector,
         accessor -> accessor.getTimestamp(null),
-        (accessor, currentRow) -> is(getTimestampForVector(currentRow, timeZone)));
+        (accessor, currentRow) -> is(getTimestampForVector(currentRow)));
   }
 
   @ParameterizedTest
@@ -240,6 +242,62 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
           assertThat(accessor.getTime(calendar).getTime(), is(expected.toEpochMilli()));
           assertThat(accessor.wasNull(), is(false));
         });
+  }
+
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testShouldGetTimestampOfVectorWithTzBeTheSamePointInTimeAsInstant(
+      Supplier<TimeStampVector> vectorSupplier, String vectorType, String timeZone)
+      throws Exception {
+    setup(vectorSupplier);
+    Assumptions.assumeTrue(timeZone != null);
+    final Calendar calendar = Calendar.getInstance(TimeZone.getTimeZone(AMERICA_SAO_PAULO));
+
+    accessorIterator.iterate(
+        vector,
+        (accessor, currentRow) -> {
+          final Instant expected = accessor.getObject(Instant.class);
+
+          assertThat(accessor.getTimestamp(null).toInstant(), equalTo(expected));
+          assertThat(accessor.getTimestamp(calendar).toInstant(), equalTo(expected));
+          assertThat(accessor.getDate(calendar).getTime(), is(expected.toEpochMilli()));
+          assertThat(accessor.getTime(calendar).getTime(), is(expected.toEpochMilli()));
+          assertThat(accessor.wasNull(), is(false));
+        });
+  }
+
+  @Test
+  public void testShouldGetPointInTimeBeUnambiguousInDstOverlap() throws Exception {
+    // 2021-10-31 in Madrid, the wall-clock 02:30 happens twice: first at +02:00, then at +01:00
+    final Instant summerTime = Instant.parse("2021-10-31T00:30:00Z");
+    final Instant winterTime = Instant.parse("2021-10-31T01:30:00Z");
+    final TimeStampMilliTZVector tzVector =
+        new TimeStampMilliTZVector(
+            "", rootAllocatorTestExtension.getRootAllocator(), "Europe/Madrid");
+    // closed by tearDown
+    setup(() -> tzVector);
+    tzVector.allocateNew(2);
+    tzVector.set(0, summerTime.toEpochMilli());
+    tzVector.set(1, winterTime.toEpochMilli());
+    tzVector.setValueCount(2);
+
+    final Instant[] expected = {summerTime, winterTime};
+    final int[] expectedOffsetSeconds = {2 * 3600, 3600};
+    for (int row = 0; row < 2; row++) {
+      final int currentRow = row;
+      final ArrowFlightJdbcTimeStampVectorAccessor rowAccessor =
+          new ArrowFlightJdbcTimeStampVectorAccessor(tzVector, () -> currentRow, (b) -> {});
+
+      assertThat(rowAccessor.getObject(Instant.class), equalTo(expected[row]));
+      assertThat(rowAccessor.getTimestamp(null).toInstant(), equalTo(expected[row]));
+      assertThat(
+          rowAccessor.getObject(OffsetDateTime.class).getOffset().getTotalSeconds(),
+          is(expectedOffsetSeconds[row]));
+      assertThat(rowAccessor.getObject(ZonedDateTime.class).toInstant(), equalTo(expected[row]));
+      assertThat(
+          rowAccessor.getObject(LocalDateTime.class),
+          equalTo(LocalDateTime.parse("2021-10-31T02:30")));
+    }
   }
 
   @ParameterizedTest
@@ -354,8 +412,7 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
     accessorIterator.assertAccessorGetter(
         vector,
         accessor -> accessor.getDate(null),
-        (accessor, currentRow) ->
-            is(new Date(getTimestampForVector(currentRow, timeZone).getTime())));
+        (accessor, currentRow) -> is(new Date(getTimestampForVector(currentRow).getTime())));
   }
 
   @ParameterizedTest
@@ -400,8 +457,7 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
     accessorIterator.assertAccessorGetter(
         vector,
         accessor -> accessor.getTime(null),
-        (accessor, currentRow) ->
-            is(new Time(getTimestampForVector(currentRow, timeZone).getTime())));
+        (accessor, currentRow) -> is(new Time(getTimestampForVector(currentRow).getTime())));
   }
 
   @ParameterizedTest
@@ -441,7 +497,7 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
    * Expected difference between the result without Calendar and the result with Calendar.
    *
    * <ul>
-   *   <li>Vectors with TZ info are adjusted from the vector TZ to the Calendar TZ.
+   *   <li>Vectors with TZ info hold a point in time, so the Calendar has no effect.
    *   <li>Vectors without TZ info hold a wall-clock value, which is interpreted in the default TZ
    *       when there is no Calendar and in the Calendar TZ otherwise.
    * </ul>
@@ -449,14 +505,13 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
   private long getExpectedCalendarOffset(
       TimeZone calendarTimeZone, long resultWithoutCalendar, long result) {
     if (getVectorIsZoned(vector)) {
-      return (long) calendarTimeZone.getOffset(resultWithoutCalendar)
-          - getTimeZoneForVector(vector).getOffset(resultWithoutCalendar);
+      return 0L;
     }
     return (long) calendarTimeZone.getOffset(result)
         - TimeZone.getDefault().getOffset(resultWithoutCalendar);
   }
 
-  private Timestamp getTimestampForVector(int currentRow, String timeZone) {
+  private Timestamp getTimestampForVector(int currentRow) {
     Object object = vector.getObject(currentRow);
 
     Timestamp expectedTimestamp = null;
@@ -465,10 +520,7 @@ public class ArrowFlightJdbcTimeStampVectorAccessorTest {
     } else if (object instanceof Long) {
       TimeUnit timeUnit = getTimeUnitForVector(vector);
       long millis = timeUnit.toMillis((Long) object);
-      expectedTimestamp =
-          Timestamp.valueOf(
-              LocalDateTime.ofInstant(
-                  Instant.ofEpochMilli(millis), TimeZone.getTimeZone(timeZone).toZoneId()));
+      expectedTimestamp = Timestamp.from(Instant.ofEpochMilli(millis));
     }
     return expectedTimestamp;
   }

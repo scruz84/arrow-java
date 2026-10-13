@@ -27,9 +27,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
-import java.time.temporal.ChronoUnit;
 import java.util.Calendar;
 import java.util.Objects;
 import java.util.Set;
@@ -89,7 +87,7 @@ public class ArrowFlightJdbcTimeStampVectorAccessor extends ArrowFlightJdbcAcces
     } else if (type == OffsetDateTime.class) {
       value = getOffsetDateTime();
     } else if (type == LocalDateTime.class) {
-      value = getLocalDateTime(null);
+      value = getLocalDateTime();
     } else if (type == ZonedDateTime.class) {
       value = getZonedDateTime();
     } else if (type == Instant.class) {
@@ -109,95 +107,113 @@ public class ArrowFlightJdbcTimeStampVectorAccessor extends ArrowFlightJdbcAcces
   }
 
   private ZonedDateTime getZonedDateTime() {
-    LocalDateTime localDateTime = getLocalDateTime(null);
-    if (localDateTime == null) {
+    final Instant instant = getInstant();
+    if (instant == null) {
       return null;
     }
 
-    return localDateTime.atZone(this.timeZone.toZoneId());
+    return instant.atZone(this.timeZone.toZoneId());
   }
 
   private OffsetDateTime getOffsetDateTime() {
-    LocalDateTime localDateTime = getLocalDateTime(null);
-    if (localDateTime == null) {
+    final ZonedDateTime zonedDateTime = getZonedDateTime();
+    if (zonedDateTime == null) {
       return null;
     }
-    ZoneOffset offset = this.timeZone.toZoneId().getRules().getOffset(localDateTime);
-    return localDateTime.atOffset(offset);
+
+    return zonedDateTime.toOffsetDateTime();
   }
 
+  /**
+   * Get the point in time of the value. It is calculated from the stored epoch value, as the wall
+   * clock of a TZ is ambiguous in the DST overlaps.
+   */
   private Instant getInstant() {
-    LocalDateTime localDateTime = getLocalDateTime(null);
-    if (localDateTime == null) {
+    if (!fillHolder()) {
       return null;
     }
-    ZoneOffset offset = this.timeZone.toZoneId().getRules().getOffset(localDateTime);
-    return localDateTime.toInstant(offset);
+
+    final long value = holder.value;
+    switch (this.timeUnit) {
+      case SECONDS:
+        return Instant.ofEpochSecond(value);
+      case MILLISECONDS:
+        return Instant.ofEpochMilli(value);
+      case MICROSECONDS:
+        return Instant.ofEpochSecond(
+            Math.floorDiv(value, 1_000_000L), Math.floorMod(value, 1_000_000L) * 1_000L);
+      case NANOSECONDS:
+        return Instant.ofEpochSecond(
+            Math.floorDiv(value, 1_000_000_000L), Math.floorMod(value, 1_000_000_000L));
+      default:
+        throw new UnsupportedOperationException("Invalid Arrow time unit");
+    }
   }
 
-  private LocalDateTime getLocalDateTime(Calendar calendar) {
+  /**
+   * Get the wall-clock date and time of the value: the one at the vector TZ when it has TZ info,
+   * the stored value otherwise.
+   */
+  private LocalDateTime getLocalDateTime() {
+    if (!fillHolder()) {
+      return null;
+    }
+
+    return this.longToLocalDateTime.fromLong(holder.value);
+  }
+
+  private boolean fillHolder() {
     getter.get(getCurrentRow(), holder);
     this.wasNull = holder.isSet == 0;
     this.wasNullConsumer.setWasNull(this.wasNull);
-    if (this.wasNull) {
-      return null;
-    }
-
-    long value = holder.value;
-
-    LocalDateTime localDateTime = this.longToLocalDateTime.fromLong(value);
-
-    // Adjust timestamp to desired calendar (if provided) only if the column includes TZ info,
-    // otherwise treat as wall-clock time
-    if (calendar != null && this.isZoned) {
-      TimeZone timeZone = calendar.getTimeZone();
-      long millis = this.timeUnit.toMillis(value);
-      localDateTime =
-          localDateTime.minus(
-              timeZone.getOffset(millis) - this.timeZone.getOffset(millis), ChronoUnit.MILLIS);
-    }
-    return localDateTime;
+    return !this.wasNull;
   }
 
   @Override
   public Date getDate(Calendar calendar) {
-    LocalDateTime localDateTime = getLocalDateTime(calendar);
-    if (localDateTime == null) {
+    final Timestamp timestamp = getTimestamp(calendar);
+    if (timestamp == null) {
       return null;
     }
 
-    return new Date(getTimestampWithOffset(calendar, localDateTime).getTime());
+    return new Date(timestamp.getTime());
   }
 
   @Override
   public Time getTime(Calendar calendar) {
-    LocalDateTime localDateTime = getLocalDateTime(calendar);
-    if (localDateTime == null) {
+    final Timestamp timestamp = getTimestamp(calendar);
+    if (timestamp == null) {
       return null;
     }
 
-    return new Time(getTimestampWithOffset(calendar, localDateTime).getTime());
-  }
-
-  @Override
-  public Timestamp getTimestamp(Calendar calendar) {
-    LocalDateTime localDateTime = getLocalDateTime(calendar);
-    if (localDateTime == null) {
-      return null;
-    }
-
-    return getTimestampWithOffset(calendar, localDateTime);
+    return new Time(timestamp.getTime());
   }
 
   /**
-   * Build a Timestamp from the wall-clock value of the vector. When the vector has no TZ info, the
-   * stored value is a wall-clock date and time with no zone attached, so a Calendar (if provided)
-   * defines the zone in which that wall-clock is interpreted, as stated by the JDBC contract of
-   * getTimestamp(Calendar), getDate(Calendar) and getTime(Calendar). Vectors with TZ info are
-   * already adjusted to the Calendar in {@link #getLocalDateTime(Calendar)}.
+   * Get the value as a Timestamp.
+   *
+   * <ul>
+   *   <li>Vectors with TZ info hold a point in time, which is returned as is. The Calendar has no
+   *       effect.
+   *   <li>Vectors without TZ info hold a wall-clock date and time with no zone attached, so a
+   *       Calendar (if provided) defines the zone in which that wall-clock is interpreted, as
+   *       stated by the JDBC contract of getTimestamp(Calendar), getDate(Calendar) and
+   *       getTime(Calendar). Without Calendar the default zone is used.
+   * </ul>
    */
-  private Timestamp getTimestampWithOffset(Calendar calendar, LocalDateTime localDateTime) {
-    if (calendar != null && !isZoned) {
+  @Override
+  public Timestamp getTimestamp(Calendar calendar) {
+    if (this.isZoned) {
+      final Instant instant = getInstant();
+      return instant == null ? null : Timestamp.from(instant);
+    }
+
+    final LocalDateTime localDateTime = getLocalDateTime();
+    if (localDateTime == null) {
+      return null;
+    }
+
+    if (calendar != null) {
       return Timestamp.from(localDateTime.atZone(calendar.getTimeZone().toZoneId()).toInstant());
     }
     return Timestamp.valueOf(localDateTime);
