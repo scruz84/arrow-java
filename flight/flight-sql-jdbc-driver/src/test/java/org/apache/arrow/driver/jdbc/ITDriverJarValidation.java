@@ -171,6 +171,8 @@ public class ITDriverJarValidation {
           new String(jar.getInputStream(entry).readAllBytes(), StandardCharsets.UTF_8);
       Assertions.assertTrue(
           content.contains("org.apache.arrow.driver.jdbc.dialect.AnsiSqlDialect"), content);
+      Assertions.assertTrue(
+          content.contains("org.apache.arrow.driver.jdbc.dialect.DenodoSqlDialect"), content);
       Assertions.assertFalse(content.contains(".shaded."), content);
     }
   }
