@@ -39,6 +39,7 @@ import org.apache.arrow.driver.jdbc.client.utils.ClientAuthenticationUtils;
 import org.apache.arrow.driver.jdbc.client.utils.FlightClientCache;
 import org.apache.arrow.driver.jdbc.client.utils.FlightLocationQueue;
 import org.apache.arrow.flight.CallOption;
+import org.apache.arrow.flight.CallOptions;
 import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.CloseSessionRequest;
 import org.apache.arrow.flight.FlightClient;
@@ -132,6 +133,19 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
    */
   private CallOption[] getOptions() {
     return options.toArray(new CallOption[0]);
+  }
+
+  /**
+   * Gets the options for DoPut calls: the regular {@link #options}, plus GZIP compression if
+   * enabled. Compression is not applied to other calls, whose requests are small.
+   */
+  private CallOption[] getPutOptions() {
+    if (!builder.useCompression) {
+      return getOptions();
+    }
+    final List<CallOption> putOptions = new ArrayList<>(options);
+    putOptions.add(CallOptions.compression("gzip"));
+    return putOptions.toArray(new CallOption[0]);
   }
 
   /**
@@ -459,7 +473,7 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
 
       @Override
       public long executeUpdate() {
-        return preparedStatement.executeUpdate(getOptions());
+        return preparedStatement.executeUpdate(getPutOptions());
       }
 
       @Override
@@ -690,6 +704,7 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
     @VisibleForTesting boolean retainCookies = true;
 
     @VisibleForTesting boolean retainAuth = true;
+    boolean useCompression = false;
 
     @VisibleForTesting Optional<String> catalog = Optional.empty();
 
@@ -739,6 +754,7 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
       this.allocator = original.allocator;
       this.catalog = original.catalog;
       this.oauthConfig = original.oauthConfig;
+      this.useCompression = original.useCompression;
 
       if (original.retainCookies) {
         this.cookieFactory = original.cookieFactory;
@@ -916,6 +932,17 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
      */
     public Builder withRetainCookies(boolean retainCookies) {
       this.retainCookies = retainCookies;
+      return this;
+    }
+
+    /**
+     * Sets whether to GZIP-compress data sent on DoPut (insert/update/delete) calls.
+     *
+     * @param useCompression whether to compress DoPut data.
+     * @return this builder instance.
+     */
+    public Builder withCompression(boolean useCompression) {
+      this.useCompression = useCompression;
       return this;
     }
 

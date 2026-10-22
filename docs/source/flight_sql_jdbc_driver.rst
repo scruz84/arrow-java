@@ -151,6 +151,14 @@ case-sensitive. The supported parameters are:
        in subsequent internal connections used for retrieving streams
        from separate endpoints.
 
+   * - compression
+     - none
+     - Set to ``gzip`` to GZIP-compress data the driver sends to the server
+       when executing inserts, updates and deletes (Flight ``DoPut``). This
+       trades CPU for bandwidth and requires the server to support gzip.
+       Other requests, such as queries (``DoGet``), are not compressed.
+       Only ``none`` and ``gzip`` are supported.
+
 Note that URI values must be URI-encoded if they contain characters such
 as !, @, $, etc.
 

@@ -25,6 +25,14 @@ public class CallOptions {
     return new Timeout(duration, unit);
   }
 
+  /**
+   * Compress outgoing messages with the given gRPC codec (for example {@code "gzip"}). The codec
+   * must be registered with gRPC and supported by the server.
+   */
+  public static CallOption compression(String codec) {
+    return new Compression(codec);
+  }
+
   static <T extends AbstractStub<T>> T wrapStub(T stub, CallOption[] options) {
     for (CallOption option : options) {
       if (option instanceof GrpcCallOption) {
@@ -46,6 +54,19 @@ public class CallOptions {
     @Override
     public <T extends AbstractStub<T>> T wrapStub(T stub) {
       return stub.withDeadlineAfter(timeout, timeoutUnit);
+    }
+  }
+
+  private static class Compression implements GrpcCallOption {
+    final String codec;
+
+    Compression(String codec) {
+      this.codec = codec;
+    }
+
+    @Override
+    public <T extends AbstractStub<T>> T wrapStub(T stub) {
+      return stub.withCompression(codec);
     }
   }
 

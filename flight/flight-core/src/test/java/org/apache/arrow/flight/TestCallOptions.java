@@ -22,9 +22,12 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -33,12 +36,28 @@ import java.time.Instant;
 import java.util.Iterator;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import org.apache.arrow.flight.impl.FlightServiceGrpc;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 public class TestCallOptions {
+
+  @Test
+  public void compressionSetsGzipCompressorOnStub() {
+    final ManagedChannel channel =
+        ManagedChannelBuilder.forAddress("localhost", 1).usePlaintext().build();
+    try {
+      final FlightServiceGrpc.FlightServiceStub stub = FlightServiceGrpc.newStub(channel);
+      assertNull(stub.getCallOptions().getCompressor());
+      final FlightServiceGrpc.FlightServiceStub wrapped =
+          CallOptions.wrapStub(stub, new CallOption[] {CallOptions.compression("gzip")});
+      assertEquals("gzip", wrapped.getCallOptions().getCompressor());
+    } finally {
+      channel.shutdownNow();
+    }
+  }
 
   @Test
   @Disabled

@@ -177,6 +177,24 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
     return Duration.ofMillis(timeout);
   }
 
+  /**
+   * Whether to GZIP-compress data sent to the server on DoPut (insert/update/delete) calls.
+   *
+   * @throws IllegalArgumentException if the {@code compression} property is not {@code none} or
+   *     {@code gzip}.
+   */
+  public boolean useCompression() {
+    final String value = ArrowFlightConnectionProperty.COMPRESSION.getString(properties);
+    if (value == null || "none".equalsIgnoreCase(value)) {
+      return false;
+    }
+    if ("gzip".equalsIgnoreCase(value)) {
+      return true;
+    }
+    throw new IllegalArgumentException(
+        "Unsupported value for 'compression': '" + value + "'. Supported values: none, gzip.");
+  }
+
   /** Whether to enable the client cache. */
   public boolean useClientCache() {
     return ArrowFlightConnectionProperty.USE_CLIENT_CACHE.getBoolean(properties);
@@ -267,6 +285,7 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
     CATALOG("catalog", null, Type.STRING, false),
     CONNECT_TIMEOUT_MILLIS("connectTimeoutMs", 10000, Type.NUMBER, false),
     USE_CLIENT_CACHE("useClientCache", true, Type.BOOLEAN, false),
+    COMPRESSION("compression", "none", Type.STRING, false),
 
     // OAuth configuration properties
     OAUTH_FLOW("oauth.flow", null, Type.STRING, false),

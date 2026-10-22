@@ -18,6 +18,7 @@ package org.apache.arrow.driver.jdbc.utils;
 
 import static java.lang.Runtime.getRuntime;
 import static org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl.ArrowFlightConnectionProperty.CATALOG;
+import static org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl.ArrowFlightConnectionProperty.COMPRESSION;
 import static org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl.ArrowFlightConnectionProperty.CONNECT_TIMEOUT_MILLIS;
 import static org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl.ArrowFlightConnectionProperty.HOST;
 import static org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl.ArrowFlightConnectionProperty.PASSWORD;
@@ -28,6 +29,7 @@ import static org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl
 import static org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl.ArrowFlightConnectionProperty.USE_ENCRYPTION;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.time.Duration;
 import java.util.Properties;
@@ -36,6 +38,7 @@ import java.util.function.Function;
 import java.util.stream.Stream;
 import org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl.ArrowFlightConnectionProperty;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -129,6 +132,29 @@ public final class ArrowFlightConnectionConfigImplTest {
             false,
             false,
             (Function<ArrowFlightConnectionConfigImpl, ?>)
-                ArrowFlightConnectionConfigImpl::useClientCache));
+                ArrowFlightConnectionConfigImpl::useClientCache),
+        Arguments.of(
+            COMPRESSION,
+            "gzip",
+            true,
+            (Function<ArrowFlightConnectionConfigImpl, ?>)
+                ArrowFlightConnectionConfigImpl::useCompression),
+        Arguments.of(
+            COMPRESSION,
+            "none",
+            false,
+            (Function<ArrowFlightConnectionConfigImpl, ?>)
+                ArrowFlightConnectionConfigImpl::useCompression));
+  }
+
+  @Test
+  public void testCompressionDefaultsToOff() {
+    assertThat(arrowFlightConnectionConfig.useCompression(), is(false));
+  }
+
+  @Test
+  public void testCompressionRejectsUnsupportedCodec() {
+    properties.put(COMPRESSION.camelName(), "zstd");
+    assertThrows(IllegalArgumentException.class, arrowFlightConnectionConfig::useCompression);
   }
 }
