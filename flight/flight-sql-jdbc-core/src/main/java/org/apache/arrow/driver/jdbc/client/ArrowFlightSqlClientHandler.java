@@ -699,6 +699,9 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
 
     @VisibleForTesting @Nullable OAuthConfiguration oauthConfig;
 
+    // Shared with builder copies so connections spawned for getStreams() reuse the cached token.
+    @VisibleForTesting @Nullable OAuthTokenProvider oauthTokenProvider;
+
     // These two middleware are for internal use within build() and should not be
     // exposed by builder
     // APIs.
@@ -739,6 +742,7 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
       this.allocator = original.allocator;
       this.catalog = original.catalog;
       this.oauthConfig = original.oauthConfig;
+      this.oauthTokenProvider = original.oauthTokenProvider;
 
       if (original.retainCookies) {
         this.cookieFactory = original.cookieFactory;
@@ -1016,7 +1020,16 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
      */
     public Builder withOAuthConfiguration(final OAuthConfiguration oauthConfig) {
       this.oauthConfig = oauthConfig;
+      this.oauthTokenProvider = null;
       return this;
+    }
+
+    private OAuthTokenProvider getOrCreateOAuthTokenProvider(OAuthConfiguration oauthConfig)
+        throws SQLException {
+      if (oauthTokenProvider == null) {
+        oauthTokenProvider = oauthConfig.createTokenProvider();
+      }
+      return oauthTokenProvider;
     }
 
     public String getCacheKey() {
@@ -1045,12 +1058,13 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
           new HashSet<>(this.middlewareFactories);
       FlightClient client = null;
       boolean isUsingUserPasswordAuth = username != null && token == null;
+      boolean isUsingOAuthBasicAuth = oauthConfig != null && oauthConfig.useBasicAuth();
 
       try {
         // Token should take priority since some apps pass in a username/password even
         // when a token
         // is provided
-        if (isUsingUserPasswordAuth) {
+        if (isUsingUserPasswordAuth || isUsingOAuthBasicAuth) {
           buildTimeMiddlewareFactories.add(authFactory);
         }
         final NettyClientBuilder clientBuilder = new NettyClientBuilder();
@@ -1106,10 +1120,31 @@ public final class ArrowFlightSqlClientHandler implements AutoCloseable {
             FlightGrpcUtils.createFlightClient(
                 allocator, channelBuilder.build(), clientBuilder.middleware());
         final ArrayList<CallOption> credentialOptions = new ArrayList<>();
-        // Authentication priority: OAuth > token > username/password
+        // Authentication priority: OAuth (bearer or basic) > token > username/password
         if (oauthConfig != null) {
-          OAuthTokenProvider tokenProvider = oauthConfig.createTokenProvider();
-          credentialOptions.add(new CredentialCallOption(new OAuthCredentialWriter(tokenProvider)));
+          OAuthTokenProvider tokenProvider = getOrCreateOAuthTokenProvider(oauthConfig);
+          if (isUsingOAuthBasicAuth) {
+            // Handshake with Basic auth using the OAuth token as password; the server returns a
+            // session token that is used for subsequent calls.
+            if (!useEncryption) {
+              LOGGER.warn(
+                  "OAuth token is sent as a Basic auth password over an unencrypted connection");
+            }
+            if (authFactory.getCredentialCallOption() != null) {
+              credentialOptions.add(authFactory.getCredentialCallOption());
+            } else {
+              credentialOptions.add(
+                  ClientAuthenticationUtils.getAuthenticate(
+                      client,
+                      oauthConfig.getBasicAuthUser(),
+                      tokenProvider.getValidToken(),
+                      authFactory,
+                      options.toArray(new CallOption[0])));
+            }
+          } else {
+            credentialOptions.add(
+                new CredentialCallOption(new OAuthCredentialWriter(tokenProvider)));
+          }
         } else if (isUsingUserPasswordAuth) {
           // If the authFactory has already been used for a handshake, use the existing
           // token.

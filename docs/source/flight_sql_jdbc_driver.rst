@@ -246,6 +246,16 @@ may contain special characters that are difficult to encode in a URI.
      - null
      - The resource indicator for the token request (RFC 8707)
 
+   * - oauth.basicAuth.user
+     - String
+     - No
+     - null
+     - When set, the access token is not sent as a Bearer token. Instead,
+       the driver performs a Basic authentication handshake with the
+       Flight SQL server using this value as the user and the access
+       token as the password. See
+       `Using the OAuth Token with Basic Authentication`_
+
 **Token Exchange Properties**
 
 These properties are specific to the ``token_exchange`` flow:
@@ -296,3 +306,39 @@ These properties are specific to the ``token_exchange`` flow:
      - No
      - null
      - The desired token type for the exchanged token
+
+Using the OAuth Token with Basic Authentication
+-----------------------------------------------
+
+By default, the access token obtained from the authorization server is
+sent as ``Authorization: Bearer <token>`` on every request. Some Flight
+SQL servers instead expect the token as the password of a Basic
+authentication handshake. Setting ``oauth.basicAuth.user`` enables this
+mode, which works with any of the OAuth flows above:
+
+1. The driver obtains an access token from ``oauth.tokenUri`` using the
+   configured ``oauth.flow``.
+2. The driver performs a Flight handshake with Basic authentication,
+   using ``oauth.basicAuth.user`` as the user and the access token as the
+   password.
+3. The session token returned by the server in the handshake is used for
+   all subsequent requests, in the same way as with ``user``/``password``
+   authentication.
+
+The ``user`` and ``password`` properties are ignored when OAuth is
+enabled. Since Basic authentication only encodes the token, this mode
+should be used with ``useEncryption=true`` (the default).
+
+For example:
+
+.. code-block:: java
+
+   Properties props = new Properties();
+   props.put("oauth.flow", "client_credentials");
+   props.put("oauth.tokenUri", "https://auth.example.com/oauth/token");
+   props.put("oauth.clientId", "my-client");
+   props.put("oauth.clientSecret", "my-secret");
+   props.put("oauth.basicAuth.user", "svc-account");
+
+   Connection conn = DriverManager.getConnection(
+       "jdbc:arrow-flight-sql://flight.example.com:443", props);

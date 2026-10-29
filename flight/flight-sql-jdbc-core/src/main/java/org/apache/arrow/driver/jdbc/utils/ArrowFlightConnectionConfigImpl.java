@@ -222,7 +222,15 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
    */
   public @Nullable OAuthConfiguration getOauthConfiguration() throws SQLException {
     String flow = ArrowFlightConnectionProperty.OAUTH_FLOW.getString(properties);
+    String basicAuthUser =
+        ArrowFlightConnectionProperty.OAUTH_BASIC_AUTH_USER.getString(properties);
     if (flow == null) {
+      if (basicAuthUser != null) {
+        throw new SQLException(
+            ArrowFlightConnectionProperty.OAUTH_BASIC_AUTH_USER.camelName()
+                + " requires "
+                + ArrowFlightConnectionProperty.OAUTH_FLOW.camelName());
+      }
       return null;
     }
 
@@ -243,6 +251,7 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
         .audience(ArrowFlightConnectionProperty.OAUTH_EXCHANGE_AUDIENCE.getString(properties))
         .requestedTokenType(
             ArrowFlightConnectionProperty.OAUTH_EXCHANGE_REQUESTED_TOKEN_TYPE.getString(properties))
+        .basicAuthUser(basicAuthUser)
         .build();
   }
 
@@ -275,6 +284,8 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
     OAUTH_TOKEN_URI("oauth.tokenUri", null, Type.STRING, false),
     OAUTH_SCOPE("oauth.scope", null, Type.STRING, false),
     OAUTH_RESOURCE("oauth.resource", null, Type.STRING, false),
+    // When set, the OAuth token is used as the password of a Basic auth handshake with this user
+    OAUTH_BASIC_AUTH_USER("oauth.basicAuth.user", null, Type.STRING, false),
 
     // Token exchange specific properties
     OAUTH_EXCHANGE_SUBJECT_TOKEN("oauth.exchange.subjectToken", null, Type.STRING, false),
