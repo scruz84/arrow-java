@@ -17,9 +17,12 @@
 package org.apache.arrow.driver.jdbc.client.oauth;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.nimbusds.oauth2.sdk.Scope;
 import java.net.URI;
@@ -292,5 +295,51 @@ public class OAuthConfigurationTest {
             });
 
     assertEquals(expectedMessage, exception.getMessage());
+  }
+
+  @Test
+  public void testBasicAuthUserNotSetByDefault() throws SQLException {
+    OAuthConfiguration config =
+        new OAuthConfiguration.Builder()
+            .flow("client_credentials")
+            .tokenUri(TOKEN_URI)
+            .clientId(CLIENT_ID)
+            .clientSecret(CLIENT_SECRET)
+            .build();
+
+    assertFalse(config.useBasicAuth());
+    assertNull(config.getBasicAuthUser());
+  }
+
+  @Test
+  public void testBasicAuthUser() throws SQLException {
+    OAuthConfiguration config =
+        new OAuthConfiguration.Builder()
+            .flow("client_credentials")
+            .tokenUri(TOKEN_URI)
+            .clientId(CLIENT_ID)
+            .clientSecret(CLIENT_SECRET)
+            .basicAuthUser("svc-user")
+            .build();
+
+    assertTrue(config.useBasicAuth());
+    assertEquals("svc-user", config.getBasicAuthUser());
+  }
+
+  @Test
+  public void testEmptyBasicAuthUser() {
+    SQLException exception =
+        assertThrows(
+            SQLException.class,
+            () ->
+                new OAuthConfiguration.Builder()
+                    .flow("client_credentials")
+                    .tokenUri(TOKEN_URI)
+                    .clientId(CLIENT_ID)
+                    .clientSecret(CLIENT_SECRET)
+                    .basicAuthUser("")
+                    .build());
+
+    assertEquals("basicAuthUser cannot be empty", exception.getMessage());
   }
 }

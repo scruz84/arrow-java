@@ -39,6 +39,7 @@ public class OAuthConfiguration {
   private final @Nullable String audience;
   private final @Nullable String resource;
   private final @Nullable String requestedTokenType;
+  private final @Nullable String basicAuthUser;
 
   private OAuthConfiguration(Builder builder) throws SQLException {
     this.grantType = builder.grantType;
@@ -53,6 +54,7 @@ public class OAuthConfiguration {
     this.audience = builder.audience;
     this.resource = builder.resource;
     this.requestedTokenType = builder.requestedTokenType;
+    this.basicAuthUser = builder.basicAuthUser;
 
     validate();
   }
@@ -60,6 +62,10 @@ public class OAuthConfiguration {
   private void validate() throws SQLException {
     Objects.requireNonNull(grantType, "OAuth grant type is required");
     Objects.requireNonNull(tokenUri, "Token URI is required");
+
+    if (basicAuthUser != null && basicAuthUser.isEmpty()) {
+      throw new SQLException("basicAuthUser cannot be empty");
+    }
 
     if (GrantType.CLIENT_CREDENTIALS.equals(grantType)) {
       if (clientId == null || clientId.isEmpty()) {
@@ -78,6 +84,25 @@ public class OAuthConfiguration {
     } else {
       throw new SQLException("Unsupported OAuth grant type: " + grantType);
     }
+  }
+
+  /**
+   * Returns whether the OAuth token should be sent as the password of a Basic auth handshake
+   * instead of as a Bearer token on every call.
+   *
+   * @return true if a Basic auth user is configured
+   */
+  public boolean useBasicAuth() {
+    return basicAuthUser != null;
+  }
+
+  /**
+   * Gets the user used for the Basic auth handshake.
+   *
+   * @return the Basic auth user, or null if the token is sent as a Bearer token
+   */
+  public @Nullable String getBasicAuthUser() {
+    return basicAuthUser;
   }
 
   /**
@@ -131,6 +156,7 @@ public class OAuthConfiguration {
     private @Nullable String audience;
     private @Nullable String resource;
     private @Nullable String requestedTokenType;
+    private @Nullable String basicAuthUser;
 
     /**
      * Sets the OAuth grant type from a string value.
@@ -230,6 +256,18 @@ public class OAuthConfiguration {
 
     public Builder requestedTokenType(@Nullable String requestedTokenType) {
       this.requestedTokenType = requestedTokenType;
+      return this;
+    }
+
+    /**
+     * Sets the user for a Basic auth handshake that uses the OAuth token as password. When not set,
+     * the OAuth token is sent as a Bearer token.
+     *
+     * @param basicAuthUser the Basic auth user
+     * @return this builder
+     */
+    public Builder basicAuthUser(@Nullable String basicAuthUser) {
+      this.basicAuthUser = basicAuthUser;
       return this;
     }
 
