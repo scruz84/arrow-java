@@ -22,11 +22,18 @@ import com.nimbusds.oauth2.sdk.TokenErrorResponse;
 import com.nimbusds.oauth2.sdk.TokenRequest;
 import com.nimbusds.oauth2.sdk.TokenResponse;
 import com.nimbusds.oauth2.sdk.auth.ClientAuthentication;
+import com.nimbusds.oauth2.sdk.http.HTTPRequest;
 import com.nimbusds.oauth2.sdk.token.AccessToken;
 import java.io.IOException;
 import java.net.URI;
+import java.security.GeneralSecurityException;
+import java.security.cert.X509Certificate;
 import java.sql.SQLException;
 import java.time.Instant;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import org.apache.arrow.util.VisibleForTesting;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
@@ -46,6 +53,8 @@ public abstract class AbstractOAuthTokenProvider implements OAuthTokenProvider {
   @VisibleForTesting @Nullable ClientAuthentication clientAuth;
 
   @VisibleForTesting @Nullable Scope scope;
+
+  @VisibleForTesting boolean disableCertificateVerification;
 
   @Override
   public String getValidToken() throws SQLException {
@@ -73,8 +82,12 @@ public abstract class AbstractOAuthTokenProvider implements OAuthTokenProvider {
    */
   protected TokenInfo fetchNewToken() throws SQLException {
     try {
-      TokenRequest request = buildTokenRequest();
-      TokenResponse response = TokenResponse.parse(request.toHTTPRequest().send());
+      HTTPRequest httpRequest = buildTokenRequest().toHTTPRequest();
+      if (disableCertificateVerification) {
+        httpRequest.setSSLSocketFactory(createTrustAllSocketFactory());
+        httpRequest.setHostnameVerifier((hostname, session) -> true);
+      }
+      TokenResponse response = TokenResponse.parse(httpRequest.send());
 
       if (!response.indicatesSuccess()) {
         TokenErrorResponse errorResponse = response.toErrorResponse();
@@ -96,6 +109,29 @@ public abstract class AbstractOAuthTokenProvider implements OAuthTokenProvider {
       throw new SQLException("Failed to parse OAuth token response", e);
     } catch (IOException e) {
       throw new SQLException("Failed to send OAuth token request", e);
+    }
+  }
+
+  private static SSLSocketFactory createTrustAllSocketFactory() throws SQLException {
+    TrustManager trustAll =
+        new X509TrustManager() {
+          @Override
+          public void checkClientTrusted(X509Certificate[] chain, String authType) {}
+
+          @Override
+          public void checkServerTrusted(X509Certificate[] chain, String authType) {}
+
+          @Override
+          public X509Certificate[] getAcceptedIssuers() {
+            return new X509Certificate[0];
+          }
+        };
+    try {
+      SSLContext sslContext = SSLContext.getInstance("TLS");
+      sslContext.init(null, new TrustManager[] {trustAll}, null);
+      return sslContext.getSocketFactory();
+    } catch (GeneralSecurityException e) {
+      throw new SQLException("Failed to create SSL context for OAuth token request", e);
     }
   }
 

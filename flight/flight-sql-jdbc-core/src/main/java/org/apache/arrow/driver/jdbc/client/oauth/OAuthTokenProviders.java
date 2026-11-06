@@ -91,6 +91,7 @@ public final class OAuthTokenProviders {
     private @Nullable String clientId;
     private @Nullable String clientSecret;
     private @Nullable String scope;
+    private boolean disableCertificateVerification;
 
     ClientCredentialsBuilder() {}
 
@@ -156,6 +157,19 @@ public final class OAuthTokenProviders {
     }
 
     /**
+     * Disables TLS certificate and hostname verification for requests to the token endpoint
+     * (optional, default false). Only use this for testing.
+     *
+     * @param disableCertificateVerification whether to disable certificate verification
+     * @return this builder
+     */
+    public ClientCredentialsBuilder disableCertificateVerification(
+        boolean disableCertificateVerification) {
+      this.disableCertificateVerification = disableCertificateVerification;
+      return this;
+    }
+
+    /**
      * Builds a new ClientCredentialsTokenProvider instance.
      *
      * @return the configured ClientCredentialsTokenProvider
@@ -171,7 +185,10 @@ public final class OAuthTokenProviders {
       if (clientSecret == null) {
         throw new IllegalStateException("clientSecret is required");
       }
-      return new ClientCredentialsTokenProvider(tokenUri, clientId, clientSecret, scope);
+      ClientCredentialsTokenProvider provider =
+          new ClientCredentialsTokenProvider(tokenUri, clientId, clientSecret, scope);
+      provider.disableCertificateVerification = disableCertificateVerification;
+      return provider;
     }
   }
 
@@ -187,6 +204,7 @@ public final class OAuthTokenProviders {
     private @Nullable Scope scope;
     private @Nullable List<URI> resources;
     private @Nullable ClientAuthentication clientAuth;
+    private boolean disableCertificateVerification;
 
     TokenExchangeBuilder() {}
 
@@ -370,6 +388,19 @@ public final class OAuthTokenProviders {
     }
 
     /**
+     * Disables TLS certificate and hostname verification for requests to the token endpoint
+     * (optional, default false). Only use this for testing.
+     *
+     * @param disableCertificateVerification whether to disable certificate verification
+     * @return this builder
+     */
+    public TokenExchangeBuilder disableCertificateVerification(
+        boolean disableCertificateVerification) {
+      this.disableCertificateVerification = disableCertificateVerification;
+      return this;
+    }
+
+    /**
      * Builds a new TokenExchangeTokenProvider instance.
      *
      * @return the configured TokenExchangeTokenProvider
@@ -387,7 +418,10 @@ public final class OAuthTokenProviders {
       }
 
       TokenExchangeGrant grant = createGrant();
-      return new TokenExchangeTokenProvider(tokenUri, grant, clientAuth, scope, resources);
+      TokenExchangeTokenProvider provider =
+          new TokenExchangeTokenProvider(tokenUri, grant, clientAuth, scope, resources);
+      provider.disableCertificateVerification = disableCertificateVerification;
+      return provider;
     }
 
     private TokenExchangeGrant createGrant() {
