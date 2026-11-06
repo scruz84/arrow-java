@@ -40,6 +40,7 @@ public class OAuthConfiguration {
   private final @Nullable String resource;
   private final @Nullable String requestedTokenType;
   private final @Nullable String basicAuthUser;
+  private final boolean disableCertificateVerification;
 
   private OAuthConfiguration(Builder builder) throws SQLException {
     this.grantType = builder.grantType;
@@ -55,6 +56,7 @@ public class OAuthConfiguration {
     this.resource = builder.resource;
     this.requestedTokenType = builder.requestedTokenType;
     this.basicAuthUser = builder.basicAuthUser;
+    this.disableCertificateVerification = builder.disableCertificateVerification;
 
     validate();
   }
@@ -118,6 +120,7 @@ public class OAuthConfiguration {
           .clientId(clientId)
           .clientSecret(clientSecret)
           .scope(scope)
+          .disableCertificateVerification(disableCertificateVerification)
           .build();
     } else if (GrantType.TOKEN_EXCHANGE.equals(grantType)) {
       OAuthTokenProviders.TokenExchangeBuilder builder =
@@ -130,7 +133,8 @@ public class OAuthConfiguration {
               .audience(audience)
               .requestedTokenType(requestedTokenType)
               .scope(scope)
-              .resource(resource);
+              .resource(resource)
+              .disableCertificateVerification(disableCertificateVerification);
 
       if (clientId != null && clientSecret != null) {
         builder.clientCredentials(clientId, clientSecret);
@@ -157,6 +161,7 @@ public class OAuthConfiguration {
     private @Nullable String resource;
     private @Nullable String requestedTokenType;
     private @Nullable String basicAuthUser;
+    private boolean disableCertificateVerification;
 
     /**
      * Sets the OAuth grant type from a string value.
@@ -268,6 +273,17 @@ public class OAuthConfiguration {
      */
     public Builder basicAuthUser(@Nullable String basicAuthUser) {
       this.basicAuthUser = basicAuthUser;
+      return this;
+    }
+
+    /**
+     * Disables TLS certificate and hostname verification for requests to the token endpoint.
+     *
+     * @param disableCertificateVerification whether to disable certificate verification
+     * @return this builder
+     */
+    public Builder disableCertificateVerification(boolean disableCertificateVerification) {
+      this.disableCertificateVerification = disableCertificateVerification;
       return this;
     }
 

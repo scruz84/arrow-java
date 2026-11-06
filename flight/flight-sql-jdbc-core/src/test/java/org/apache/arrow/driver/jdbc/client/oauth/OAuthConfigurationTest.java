@@ -342,4 +342,48 @@ public class OAuthConfigurationTest {
 
     assertEquals("basicAuthUser cannot be empty", exception.getMessage());
   }
+
+  @Test
+  public void testCertificateVerificationEnabledByDefault() throws SQLException {
+    OAuthConfiguration config =
+        new OAuthConfiguration.Builder()
+            .flow("client_credentials")
+            .tokenUri(TOKEN_URI)
+            .clientId(CLIENT_ID)
+            .clientSecret(CLIENT_SECRET)
+            .build();
+
+    AbstractOAuthTokenProvider provider = (AbstractOAuthTokenProvider) config.createTokenProvider();
+    assertFalse(provider.disableCertificateVerification);
+  }
+
+  @Test
+  public void testDisableCertificateVerificationClientCredentials() throws SQLException {
+    OAuthConfiguration config =
+        new OAuthConfiguration.Builder()
+            .flow("client_credentials")
+            .tokenUri(TOKEN_URI)
+            .clientId(CLIENT_ID)
+            .clientSecret(CLIENT_SECRET)
+            .disableCertificateVerification(true)
+            .build();
+
+    AbstractOAuthTokenProvider provider = (AbstractOAuthTokenProvider) config.createTokenProvider();
+    assertTrue(provider.disableCertificateVerification);
+  }
+
+  @Test
+  public void testDisableCertificateVerificationTokenExchange() throws SQLException {
+    OAuthConfiguration config =
+        new OAuthConfiguration.Builder()
+            .flow("token_exchange")
+            .tokenUri(TOKEN_URI)
+            .subjectToken(SUBJECT_TOKEN)
+            .subjectTokenType("urn:ietf:params:oauth:token-type:jwt")
+            .disableCertificateVerification(true)
+            .build();
+
+    AbstractOAuthTokenProvider provider = (AbstractOAuthTokenProvider) config.createTokenProvider();
+    assertTrue(provider.disableCertificateVerification);
+  }
 }

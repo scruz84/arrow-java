@@ -252,6 +252,9 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
         .requestedTokenType(
             ArrowFlightConnectionProperty.OAUTH_EXCHANGE_REQUESTED_TOKEN_TYPE.getString(properties))
         .basicAuthUser(basicAuthUser)
+        .disableCertificateVerification(
+            ArrowFlightConnectionProperty.OAUTH_DISABLE_CERTIFICATE_VERIFICATION.getBoolean(
+                properties))
         .build();
   }
 
@@ -286,6 +289,9 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
     OAUTH_RESOURCE("oauth.resource", null, Type.STRING, false),
     // When set, the OAuth token is used as the password of a Basic auth handshake with this user
     OAUTH_BASIC_AUTH_USER("oauth.basicAuth.user", null, Type.STRING, false),
+    // Disables TLS certificate and hostname verification when calling the OAuth token endpoint
+    OAUTH_DISABLE_CERTIFICATE_VERIFICATION(
+        "oauth.disableCertificateVerification", false, Type.BOOLEAN, false),
 
     // Token exchange specific properties
     OAUTH_EXCHANGE_SUBJECT_TOKEN("oauth.exchange.subjectToken", null, Type.STRING, false),

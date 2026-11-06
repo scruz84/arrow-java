@@ -32,6 +32,8 @@ import mockwebserver3.MockResponse;
 import mockwebserver3.MockWebServer;
 import mockwebserver3.RecordedRequest;
 import mockwebserver3.junit5.StartStop;
+import okhttp3.tls.HandshakeCertificates;
+import okhttp3.tls.HeldCertificate;
 import org.apache.arrow.driver.jdbc.authentication.TokenAuthentication;
 import org.apache.arrow.driver.jdbc.utils.ArrowFlightConnectionConfigImpl.ArrowFlightConnectionProperty;
 import org.apache.arrow.driver.jdbc.utils.MockFlightSqlProducer;
@@ -258,6 +260,79 @@ public class OAuthIntegrationTest {
       t = t.getCause();
     }
     return false;
+  }
+
+  // ==================== OAuth Server TLS Tests ====================
+
+  /**
+   * Starts an HTTPS OAuth server with a self-signed certificate issued for a host name other than
+   * localhost, so both certificate and hostname verification fail unless disabled.
+   */
+  private MockWebServer startUntrustedHttpsOAuthServer() throws Exception {
+    HeldCertificate certificate =
+        new HeldCertificate.Builder().addSubjectAlternativeName("untrusted.example.com").build();
+    HandshakeCertificates serverCertificates =
+        new HandshakeCertificates.Builder().heldCertificate(certificate).build();
+    MockWebServer httpsServer = new MockWebServer();
+    httpsServer.useHttps(serverCertificates.sslSocketFactory());
+    httpsServer.start();
+    return httpsServer;
+  }
+
+  private Properties createHttpsClientCredentialsProperties(MockWebServer httpsServer) {
+    Properties props = createBaseProperties();
+    props.put(ArrowFlightConnectionProperty.OAUTH_FLOW.camelName(), "client_credentials");
+    props.put(
+        ArrowFlightConnectionProperty.OAUTH_TOKEN_URI.camelName(),
+        httpsServer.url("/oauth/token").toString());
+    props.put(ArrowFlightConnectionProperty.OAUTH_CLIENT_ID.camelName(), CLIENT_ID);
+    props.put(ArrowFlightConnectionProperty.OAUTH_CLIENT_SECRET.camelName(), CLIENT_SECRET);
+    return props;
+  }
+
+  @Test
+  public void testUntrustedOAuthServerCertificateIsRejected() throws Exception {
+    try (MockWebServer httpsServer = startUntrustedHttpsOAuthServer()) {
+      Properties props = createHttpsClientCredentialsProperties(httpsServer);
+
+      Exception ex =
+          assertThrows(
+              Exception.class,
+              () -> {
+                try (Connection conn = DriverManager.getConnection(getJdbcUrl(), props)) {
+                  conn.getMetaData().getCatalogs().close();
+                }
+              });
+      assertTrue(
+          containsInExceptionChain(ex, "Failed to send OAuth token request"),
+          "Exception chain should contain the failed token request");
+      assertEquals(0, httpsServer.getRequestCount());
+    }
+  }
+
+  @Test
+  public void testDisableOAuthCertificateVerification() throws Exception {
+    try (MockWebServer httpsServer = startUntrustedHttpsOAuthServer()) {
+      httpsServer.enqueue(
+          new MockResponse.Builder()
+              .code(200)
+              .setHeader("Content-Type", "application/json")
+              .body(
+                  String.format(
+                      "{\"access_token\":\"%s\",\"token_type\":\"Bearer\",\"expires_in\":3600}",
+                      VALID_ACCESS_TOKEN))
+              .build());
+
+      Properties props = createHttpsClientCredentialsProperties(httpsServer);
+      props.put(
+          ArrowFlightConnectionProperty.OAUTH_DISABLE_CERTIFICATE_VERIFICATION.camelName(), true);
+
+      try (Connection conn = DriverManager.getConnection(getJdbcUrl(), props)) {
+        conn.getMetaData().getCatalogs().close();
+      }
+
+      assertEquals(1, httpsServer.getRequestCount());
+    }
   }
 
   // ==================== Token Exchange Flow Tests ====================

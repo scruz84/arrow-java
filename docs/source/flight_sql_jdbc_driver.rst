@@ -256,6 +256,18 @@ may contain special characters that are difficult to encode in a URI.
        token as the password. See
        `Using the OAuth Token with Basic Authentication`_
 
+   * - oauth.disableCertificateVerification
+     - Boolean
+     - No
+     - false
+     - When true, the driver does not verify the TLS certificate or host
+       name of the OAuth token endpoint (``oauth.tokenUri``). This does not
+       affect the connection to the Flight SQL server, which is controlled
+       by ``disableCertificateVerification``. This is insecure: the client
+       credentials and the access token can be intercepted. Only use it
+       for testing, for example against an authorization server with a
+       self-signed certificate
+
 **Token Exchange Properties**
 
 These properties are specific to the ``token_exchange`` flow:
