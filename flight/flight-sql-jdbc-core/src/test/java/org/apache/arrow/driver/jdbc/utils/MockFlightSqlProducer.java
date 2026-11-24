@@ -31,6 +31,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.AbstractMap.SimpleImmutableEntry;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -116,6 +117,10 @@ public final class MockFlightSqlProducer implements FlightSqlProducer {
   public static final String COMMAND_STATEMENT_UPDATE = "statement_update";
   public static final String COMMAND_PREPARED_STATEMENT_QUERY = "prepared_statement_query";
   public static final String COMMAND_PREPARED_STATEMENT_UPDATE = "prepared_statement_update";
+  private volatile boolean rejectPlainStatements;
+  private final List<String> preparedStatementQueries =
+      Collections.synchronizedList(new ArrayList<>());
+  private final List<String> receivedStatements = Collections.synchronizedList(new ArrayList<>());
 
   private static FlightInfo getFlightInfoExportedAndImportedKeys(
       final Message message, final FlightDescriptor descriptor) {
@@ -264,6 +269,7 @@ public final class MockFlightSqlProducer implements FlightSqlProducer {
       final ByteString preparedStatementHandle =
           copyFrom(randomUUID().toString().getBytes(StandardCharsets.UTF_8));
       final String query = request.getQuery();
+      preparedStatementQueries.add(query);
 
       final ActionCreatePreparedStatementResult.Builder resultBuilder =
           ActionCreatePreparedStatementResult.newBuilder()
@@ -332,6 +338,12 @@ public final class MockFlightSqlProducer implements FlightSqlProducer {
       final FlightDescriptor flightDescriptor) {
     incrementCommandTypeCounter(COMMAND_STATEMENT_QUERY);
     final String query = commandStatementQuery.getQuery();
+    receivedStatements.add(query);
+    if (rejectPlainStatements) {
+      throw CallStatus.UNIMPLEMENTED
+          .withDescription("getFlightInfoStatement unimplemented")
+          .toRuntimeException();
+    }
     final Entry<Schema, List<UUID>> queryInfo =
         Preconditions.checkNotNull(
             queryResults.get(query), format("Query not registered: <%s>.", query));
@@ -420,7 +432,14 @@ public final class MockFlightSqlProducer implements FlightSqlProducer {
       final FlightStream flightStream,
       final StreamListener<PutResult> streamListener) {
     incrementCommandTypeCounter(COMMAND_STATEMENT_UPDATE);
-    return acceptUpdate(commandStatementUpdate.getQuery(), flightStream, streamListener);
+    final String query = commandStatementUpdate.getQuery();
+    receivedStatements.add(query);
+    if (rejectPlainStatements) {
+      throw CallStatus.UNIMPLEMENTED
+          .withDescription("acceptPutStatement unimplemented")
+          .toRuntimeException();
+    }
+    return acceptUpdate(query, flightStream, streamListener);
   }
 
   private Runnable acceptUpdate(
@@ -731,6 +750,37 @@ public final class MockFlightSqlProducer implements FlightSqlProducer {
 
   private void incrementCommandTypeCounter(String commandType) {
     commandTypeCounter.merge(commandType, 1, Integer::sum);
+  }
+
+  /**
+   * Gets the SQL of the statements received without a prepared statement, both queries and updates,
+   * in the order they arrived. Intended to be used in tests.
+   */
+  public List<String> getReceivedStatements() {
+    synchronized (receivedStatements) {
+      return new ArrayList<>(receivedStatements);
+    }
+  }
+
+  /** Gets the SQL of every prepared statement created, in order. Intended to be used in tests. */
+  public List<String> getPreparedStatementQueries() {
+    synchronized (preparedStatementQueries) {
+      return new ArrayList<>(preparedStatementQueries);
+    }
+  }
+
+  /**
+   * Makes the plain statement endpoints (query and update) fail with UNIMPLEMENTED, like a server
+   * that only supports prepared statements. Intended to be used in tests.
+   */
+  public void setRejectPlainStatements(final boolean reject) {
+    rejectPlainStatements = reject;
+  }
+
+  /** Clear the list of received statements. Intended to be used in tests. */
+  public void clearReceivedStatements() {
+    receivedStatements.clear();
+    preparedStatementQueries.clear();
   }
 
   private void getStreamCatalogFunctions(
