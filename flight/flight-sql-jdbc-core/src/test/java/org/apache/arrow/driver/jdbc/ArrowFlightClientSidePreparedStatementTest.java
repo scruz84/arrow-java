@@ -1123,10 +1123,12 @@ public class ArrowFlightClientSidePreparedStatementTest {
       assertNotPreparedOnServer();
 
       assertEquals(2, statement.executeUpdate("UPDATE t35 SET a = 1"));
-      assertEquals(1, PRODUCER.getActionTypeCounter().get(CREATE_PREPARED));
     }
-    // The update went through its prepared statement.
-    assertEquals(Collections.singletonList("SELECT id FROM t35"), PRODUCER.getReceivedStatements());
+    // Statement.executeQuery/executeUpdate send the text as written, as the plain endpoints do.
+    assertNotPreparedOnServer();
+    assertEquals(
+        java.util.Arrays.asList("SELECT id FROM t35", "UPDATE t35 SET a = 1"),
+        PRODUCER.getReceivedStatements());
   }
 
   @ParameterizedTest
