@@ -46,6 +46,7 @@ import org.apache.calcite.avatica.AvaticaConnection;
 import org.apache.calcite.avatica.AvaticaFactory;
 import org.apache.calcite.avatica.AvaticaStatement;
 import org.apache.calcite.avatica.DriverVersion;
+import org.slf4j.LoggerFactory;
 
 /** Connection to the Arrow Flight server. */
 public final class ArrowFlightConnection extends AvaticaConnection {
@@ -89,6 +90,11 @@ public final class ArrowFlightConnection extends AvaticaConnection {
     this.allocator = Preconditions.checkNotNull(allocator, "Allocator cannot be null.");
     this.clientHandler = Preconditions.checkNotNull(clientHandler, "Handler cannot be null.");
     this.metadataResultSetCount = 0;
+    if (!config.serverPrepareRenderedSql()
+        && Boolean.parseBoolean(properties.getProperty("serverPrepareRenderedSql"))) {
+      LoggerFactory.getLogger(ArrowFlightConnection.class)
+          .warn("serverPrepareRenderedSql is ignored unless disableServerPreparedStatements=true");
+    }
   }
 
   /**

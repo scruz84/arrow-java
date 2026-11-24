@@ -744,12 +744,21 @@ public class ArrowFlightPreparedStatement extends AvaticaPreparedStatement
       if (isClientSide(connection, query)) {
         final ArrowFlightConnectionConfigImpl config = connection.getConfig();
         final boolean probe = config.useClientSideMetadataProbe();
+        final boolean serverPrepare = config.serverPrepareRenderedSql();
         final ClientSidePreparedStatement clientSide =
             verbatim
                 ? ClientSidePreparedStatement.verbatim(
-                    connection.getClientHandler(), connection.getDialect(), query, probe)
+                    connection.getClientHandler(),
+                    connection.getDialect(),
+                    query,
+                    probe,
+                    serverPrepare)
                 : ClientSidePreparedStatement.create(
-                    connection.getClientHandler(), connection.getDialect(), query, probe);
+                    connection.getClientHandler(),
+                    connection.getDialect(),
+                    query,
+                    probe,
+                    serverPrepare);
         signature =
             ArrowFlightMetaImpl.buildClientSideSignature(
                 query, clientSide.getParameterCount(), Boolean.TRUE.equals(clientSide.isUpdate()));

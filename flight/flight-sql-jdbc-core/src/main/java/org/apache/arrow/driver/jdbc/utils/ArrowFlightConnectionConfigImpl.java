@@ -223,6 +223,15 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
         || ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_QUERIES.getBoolean(properties);
   }
 
+  /**
+   * Whether client-side statements are sent through the prepared statement endpoints. Only has an
+   * effect together with {@link #disableServerPreparedStatements()}.
+   */
+  public boolean serverPrepareRenderedSql() {
+    return disableServerPreparedStatements()
+        && ArrowFlightConnectionProperty.SERVER_PREPARE_RENDERED_SQL.getBoolean(properties);
+  }
+
   /** The name of the SQL dialect used to render parameter values. */
   public String getDialect() {
     return ArrowFlightConnectionProperty.DIALECT.getString(properties);
@@ -329,6 +338,7 @@ public final class ArrowFlightConnectionConfigImpl extends ConnectionConfigImpl 
     DISABLE_SERVER_PREPARED_STATEMENTS(
         "disableServerPreparedStatements", false, Type.BOOLEAN, false),
     DISABLE_SERVER_PREPARED_QUERIES("disableServerPreparedQueries", false, Type.BOOLEAN, false),
+    SERVER_PREPARE_RENDERED_SQL("serverPrepareRenderedSql", false, Type.BOOLEAN, false),
     DIALECT("dialect", "ansi", Type.STRING, false),
     DIALECT_CLASS("dialectClass", null, Type.STRING, false),
     CLIENT_SIDE_METADATA_PROBE("clientSideMetadataProbe", true, Type.BOOLEAN, false),
