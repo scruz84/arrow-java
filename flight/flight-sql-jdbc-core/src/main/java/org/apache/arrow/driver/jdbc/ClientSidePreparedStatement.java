@@ -52,8 +52,16 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
   private final ScannedSql scanned;
   private final StatementKind kind;
   private final boolean metadataProbe;
+  private final boolean serverPrepare;
 
   private String renderedSql;
+
+  /** The server handle of a statement without parameters, which is reused until closed. */
+  private ArrowFlightSqlClientHandler.PreparedStatement parameterlessHandle;
+
+  /** The server handle of the last query, kept open until its stream is no longer needed. */
+  private ArrowFlightSqlClientHandler.PreparedStatement queryHandle;
+
   private boolean probed;
   private Schema probedSchema = NO_COLUMNS;
 
@@ -62,13 +70,15 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
       SqlDialect dialect,
       String sql,
       ScannedSql scanned,
-      boolean metadataProbe) {
+      boolean metadataProbe,
+      boolean serverPrepare) {
     this.handler = handler;
     this.dialect = dialect;
     this.sql = sql;
     this.scanned = scanned;
     this.kind = dialect.classify(sql);
     this.metadataProbe = metadataProbe;
+    this.serverPrepare = serverPrepare;
     // A statement without parameters needs no binding before it runs.
     this.renderedSql = scanned.parameterCount() == 0 ? sql : "";
   }
@@ -83,8 +93,28 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
    */
   static ClientSidePreparedStatement create(
       ArrowFlightSqlClientHandler handler, SqlDialect dialect, String sql, boolean metadataProbe) {
+    return create(handler, dialect, sql, metadataProbe, false);
+  }
+
+  /**
+   * Like {@link #create(ArrowFlightSqlClientHandler, SqlDialect, String, boolean)}.
+   *
+   * @param serverPrepare whether the rendered statement goes through the Flight SQL prepared
+   *     statement endpoints instead of the plain statement endpoints.
+   */
+  static ClientSidePreparedStatement create(
+      ArrowFlightSqlClientHandler handler,
+      SqlDialect dialect,
+      String sql,
+      boolean metadataProbe,
+      boolean serverPrepare) {
     return new ClientSidePreparedStatement(
-        handler, dialect, sql, ScannedSql.scan(sql, dialect.lexicalRules()), metadataProbe);
+        handler,
+        dialect,
+        sql,
+        ScannedSql.scan(sql, dialect.lexicalRules()),
+        metadataProbe,
+        serverPrepare);
   }
 
   /**
@@ -93,8 +123,18 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
    */
   static ClientSidePreparedStatement verbatim(
       ArrowFlightSqlClientHandler handler, SqlDialect dialect, String sql, boolean metadataProbe) {
+    return verbatim(handler, dialect, sql, metadataProbe, false);
+  }
+
+  /** Like {@link #verbatim(ArrowFlightSqlClientHandler, SqlDialect, String, boolean)}. */
+  static ClientSidePreparedStatement verbatim(
+      ArrowFlightSqlClientHandler handler,
+      SqlDialect dialect,
+      String sql,
+      boolean metadataProbe,
+      boolean serverPrepare) {
     return new ClientSidePreparedStatement(
-        handler, dialect, sql, new ScannedSql(List.of(sql)), metadataProbe);
+        handler, dialect, sql, new ScannedSql(List.of(sql)), metadataProbe, serverPrepare);
   }
 
   /** The number of parameters of the statement. */
@@ -146,8 +186,20 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
     }
     probed = true;
     try {
-      final FlightInfo info = handler.getInfo(dialect.metadataProbeSql(scanned));
-      probedSchema = info.getSchemaOptional().orElse(NO_COLUMNS);
+      final String probeSql = dialect.metadataProbeSql(scanned);
+      if (serverPrepare) {
+        // The server may not implement the plain statement endpoints, and preparing the
+        // statement gives its schema without running it.
+        final ArrowFlightSqlClientHandler.PreparedStatement probe = handler.prepare(probeSql);
+        try {
+          probedSchema = probe.getDataSetSchema();
+        } finally {
+          closeQuietly(probe);
+        }
+      } else {
+        final FlightInfo info = handler.getInfo(probeSql);
+        probedSchema = info.getSchemaOptional().orElse(NO_COLUMNS);
+      }
     } catch (RuntimeException e) {
       LOGGER.debug("Could not probe the result set metadata of a client-side statement", e);
     }
@@ -156,12 +208,63 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
 
   @Override
   public FlightInfo executeQuery() throws SQLException {
-    return handler.getInfo(renderedSql);
+    if (!serverPrepare) {
+      return handler.getInfo(renderedSql);
+    }
+    if (scanned.parameterCount() == 0) {
+      return parameterlessHandle().executeQuery();
+    }
+    // The stream of the previous query is no longer needed once the statement runs again.
+    closeQueryHandle();
+    final ArrowFlightSqlClientHandler.PreparedStatement prepared = handler.prepare(renderedSql);
+    try {
+      final FlightInfo info = prepared.executeQuery();
+      queryHandle = prepared;
+      return info;
+    } catch (SQLException | RuntimeException e) {
+      closeQuietly(prepared);
+      throw e;
+    }
   }
 
   @Override
   public long executeUpdate() {
-    return handler.executeUpdate(renderedSql);
+    if (!serverPrepare) {
+      return handler.executeUpdate(renderedSql);
+    }
+    if (scanned.parameterCount() == 0) {
+      return parameterlessHandle().executeUpdate();
+    }
+    // The statement text changes with the parameters, so a handle serves one execution only.
+    final ArrowFlightSqlClientHandler.PreparedStatement prepared = handler.prepare(renderedSql);
+    try {
+      return prepared.executeUpdate();
+    } finally {
+      closeQuietly(prepared);
+    }
+  }
+
+  private ArrowFlightSqlClientHandler.PreparedStatement parameterlessHandle() {
+    if (parameterlessHandle == null) {
+      parameterlessHandle = handler.prepare(renderedSql);
+    }
+    return parameterlessHandle;
+  }
+
+  private void closeQueryHandle() {
+    final ArrowFlightSqlClientHandler.PreparedStatement prepared = queryHandle;
+    queryHandle = null;
+    if (prepared != null) {
+      closeQuietly(prepared);
+    }
+  }
+
+  private static void closeQuietly(ArrowFlightSqlClientHandler.PreparedStatement prepared) {
+    try {
+      prepared.close();
+    } catch (RuntimeException e) {
+      LOGGER.debug("Could not close a server-side prepared statement", e);
+    }
   }
 
   @Override
@@ -194,7 +297,13 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
 
   @Override
   public void close() {
-    // Nothing is held on the server.
+    // Without serverPrepare nothing is held on the server.
+    closeQueryHandle();
+    final ArrowFlightSqlClientHandler.PreparedStatement prepared = parameterlessHandle;
+    parameterlessHandle = null;
+    if (prepared != null) {
+      closeQuietly(prepared);
+    }
   }
 
   @Override

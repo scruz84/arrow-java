@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -239,5 +240,72 @@ public class ClientSidePreparedStatementTest {
     assertEquals(NO_COLUMNS, statement.probeDataSetSchema());
     assertEquals(NO_COLUMNS, statement.probeDataSetSchema());
     verify(handler, times(1)).getInfo(anyString());
+  }
+
+  private ClientSidePreparedStatement createServerPrepared(final String sql) {
+    return ClientSidePreparedStatement.create(handler, dialect, sql, true, true);
+  }
+
+  @Test
+  public void testServerPreparedQueryUsesAHandlePerExecution() throws Exception {
+    final ArrowFlightSqlClientHandler.PreparedStatement first =
+        mock(ArrowFlightSqlClientHandler.PreparedStatement.class);
+    final ArrowFlightSqlClientHandler.PreparedStatement second =
+        mock(ArrowFlightSqlClientHandler.PreparedStatement.class);
+    when(handler.prepare("select id from t where a = 1 and b = 2")).thenReturn(first);
+    when(handler.prepare("select id from t where a = 3 and b = 4")).thenReturn(second);
+    when(first.executeQuery()).thenReturn(FLIGHT_INFO);
+    when(second.executeQuery()).thenReturn(FLIGHT_INFO);
+    final ClientSidePreparedStatement statement = createServerPrepared(QUERY);
+    statement.bind(values(1, 2));
+    assertSame(FLIGHT_INFO, statement.executeQuery());
+    verify(first, never()).close();
+    statement.bind(values(3, 4));
+    assertSame(FLIGHT_INFO, statement.executeQuery());
+    verify(first).close();
+    verify(second, never()).close();
+    statement.close();
+    verify(second).close();
+    verify(handler, never()).getInfo(anyString());
+  }
+
+  @Test
+  public void testServerPreparedUpdateClosesTheHandle() {
+    final ArrowFlightSqlClientHandler.PreparedStatement prepared =
+        mock(ArrowFlightSqlClientHandler.PreparedStatement.class);
+    when(handler.prepare("insert into t values (1, 2)")).thenReturn(prepared);
+    when(prepared.executeUpdate()).thenThrow(new IllegalStateException("boom"));
+    final ClientSidePreparedStatement statement = createServerPrepared(UPDATE);
+    statement.bind(values(1, 2));
+    assertThrows(IllegalStateException.class, statement::executeUpdate);
+    verify(prepared).close();
+    verify(handler, never()).executeUpdate(anyString());
+  }
+
+  @Test
+  public void testServerPreparedStatementWithoutParametersReusesItsHandle() throws Exception {
+    final ArrowFlightSqlClientHandler.PreparedStatement prepared =
+        mock(ArrowFlightSqlClientHandler.PreparedStatement.class);
+    when(handler.prepare("select id from t")).thenReturn(prepared);
+    when(prepared.executeQuery()).thenReturn(FLIGHT_INFO);
+    final ClientSidePreparedStatement statement = createServerPrepared("select id from t");
+    statement.executeQuery();
+    statement.executeQuery();
+    verify(handler, times(1)).prepare("select id from t");
+    verify(prepared, never()).close();
+    statement.close();
+    verify(prepared).close();
+  }
+
+  @Test
+  public void testServerPreparedProbeReadsTheSchemaFromPrepare() {
+    final ArrowFlightSqlClientHandler.PreparedStatement prepared =
+        mock(ArrowFlightSqlClientHandler.PreparedStatement.class);
+    when(handler.prepare(anyString())).thenReturn(prepared);
+    when(prepared.getDataSetSchema()).thenReturn(ID_SCHEMA);
+    final ClientSidePreparedStatement statement = createServerPrepared(QUERY);
+    assertEquals(ID_SCHEMA, statement.probeDataSetSchema());
+    verify(prepared).close();
+    verify(handler, never()).getInfo(anyString());
   }
 }

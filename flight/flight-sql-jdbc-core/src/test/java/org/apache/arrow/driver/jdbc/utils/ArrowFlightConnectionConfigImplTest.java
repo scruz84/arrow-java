@@ -239,6 +239,18 @@ public final class ArrowFlightConnectionConfigImplTest {
   }
 
   @Test
+  public void testServerPrepareRenderedSqlNeedsDisableServerPreparedStatements() {
+    assertThat(arrowFlightConnectionConfig.serverPrepareRenderedSql(), is(false));
+    properties.put(ArrowFlightConnectionProperty.SERVER_PREPARE_RENDERED_SQL.camelName(), true);
+    assertThat(arrowFlightConnectionConfig.serverPrepareRenderedSql(), is(false));
+    properties.put(ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_QUERIES.camelName(), true);
+    assertThat(arrowFlightConnectionConfig.serverPrepareRenderedSql(), is(false));
+    properties.put(
+        ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_STATEMENTS.camelName(), true);
+    assertThat(arrowFlightConnectionConfig.serverPrepareRenderedSql(), is(true));
+  }
+
+  @Test
   public void testDisablingAllStatementsImpliesDisablingQueries() {
     properties.put(
         ArrowFlightConnectionProperty.DISABLE_SERVER_PREPARED_STATEMENTS.camelName(), true);

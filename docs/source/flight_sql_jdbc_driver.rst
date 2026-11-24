@@ -184,6 +184,14 @@ case-sensitive. The supported parameters are:
        Updates with parameters are still prepared on the server. Implied by
        ``disableServerPreparedStatements``.
 
+   * - serverPrepareRenderedSql
+     - false
+     - Only with ``disableServerPreparedStatements=true``. Send the SQL
+       that the driver wrote parameters into through the Flight SQL prepared
+       statement endpoints instead of the plain statement endpoints. For
+       servers that do not implement the plain ones. Ignored (with a warning)
+       otherwise. See :ref:`flight-sql-jdbc-client-side-statements`.
+
    * - dialect
      - ansi
      - The name of the SQL dialect used to write parameter values into the
@@ -270,6 +278,30 @@ Two properties choose which statements are handled this way:
        ...
      }
    }
+
+Using the prepared statement endpoints
+--------------------------------------
+
+Normally the driver sends the statement it has written, which no longer
+has parameters, with the plain Flight SQL statement endpoints
+(``CommandStatementQuery`` and ``CommandStatementUpdate``).  Some servers
+implement only the prepared statement endpoints, and answer the plain ones
+with ``UNIMPLEMENTED`` (for example ``acceptPutStatement unimplemented``).
+For those, add ``serverPrepareRenderedSql=true`` together with
+``disableServerPreparedStatements=true``.  Every statement, including one
+run with a plain ``Statement``, then goes through
+``CreatePreparedStatement``, ``CommandPreparedStatementQuery`` or
+``CommandPreparedStatementUpdate``, and ``ClosePreparedStatement``.  Result
+set metadata is read from the ``CreatePreparedStatement`` result.
+
+The statement text changes with the parameter values, so the driver
+prepares it on the server for each execution, and closes it right after an
+update.  The handle of a query stays open until the statement runs again or
+is closed, because the result stream may depend on it.  A statement without
+parameters is prepared once and reused.  Executing a batch of N rows makes N
+prepared statements.  This costs more round trips than the default, so leave
+it off unless the server needs it.  The property has no effect with only
+``disableServerPreparedQueries=true``.
 
 How parameters are written
 --------------------------

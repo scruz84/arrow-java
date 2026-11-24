@@ -45,9 +45,13 @@ public class ArrowFlightStatement extends AvaticaStatement implements ArrowFligh
     connection.registerStatementOwner(this);
   }
 
+  /** The statement of the last direct query, when sent through the prepared endpoints. */
+  private ClientSidePreparedStatement serverPreparedQuery;
+
   @Override
   protected void close_() {
     try {
+      closeServerPreparedQuery();
       super.close_();
     } finally {
       ((ArrowFlightConnection) connection).unregisterStatementOwner(this);
@@ -82,6 +86,10 @@ public class ArrowFlightStatement extends AvaticaStatement implements ArrowFligh
     updateCount = -1;
     try {
       switchToDirectStatementMode();
+      closeServerPreparedQuery();
+      if (getConnection().getConfig().serverPrepareRenderedSql()) {
+        serverPreparedQuery = newServerPrepared(sql);
+      }
       final Meta.Signature signature =
           ArrowFlightMetaImpl.buildSignature(sql, StatementType.SELECT);
       setSignature(signature);
@@ -99,7 +107,18 @@ public class ArrowFlightStatement extends AvaticaStatement implements ArrowFligh
 
     try {
       switchToDirectStatementMode();
-      final long updatedCount = getConnection().getClientHandler().executeUpdate(sql);
+      closeServerPreparedQuery();
+      final long updatedCount;
+      if (getConnection().getConfig().serverPrepareRenderedSql()) {
+        final ClientSidePreparedStatement prepared = newServerPrepared(sql);
+        try {
+          updatedCount = prepared.executeUpdate();
+        } finally {
+          prepared.close();
+        }
+      } else {
+        updatedCount = getConnection().getClientHandler().executeUpdate(sql);
+      }
       setSignature(ArrowFlightMetaImpl.buildSignature(sql, StatementType.IS_DML));
       updateCount = updatedCount;
       return updatedCount;
@@ -129,7 +148,10 @@ public class ArrowFlightStatement extends AvaticaStatement implements ArrowFligh
     }
 
     // Direct Statement.executeQuery(String) / executeUpdate(String) path.
-    final FlightInfo flightInfo = connection.getClientHandler().getInfo(signature.sql);
+    final FlightInfo flightInfo =
+        serverPreparedQuery != null
+            ? serverPreparedQuery.executeQuery()
+            : connection.getClientHandler().getInfo(signature.sql);
     updateSignatureColumnsFromFlightInfo(signature, flightInfo);
     return flightInfo;
   }
@@ -167,6 +189,24 @@ public class ArrowFlightStatement extends AvaticaStatement implements ArrowFligh
     return AvaticaConnection.HELPER.createException(prefix + ": " + message, sqlException);
   }
 
+  /**
+   * Creates the statement that sends {@code sql} as written through the prepared statement
+   * endpoints, for servers that do not implement the plain ones.
+   */
+  private ClientSidePreparedStatement newServerPrepared(final String sql) throws SQLException {
+    final ArrowFlightConnection connection = getConnection();
+    return ClientSidePreparedStatement.verbatim(
+        connection.getClientHandler(), connection.getDialect(), sql, false, true);
+  }
+
+  private void closeServerPreparedQuery() {
+    final ClientSidePreparedStatement prepared = serverPreparedQuery;
+    serverPreparedQuery = null;
+    if (prepared != null) {
+      prepared.close();
+    }
+  }
+
   private void clearOpenResultSet() throws SQLException {
     synchronized (this) {
       if (openResultSet != null) {
@@ -193,6 +233,7 @@ public class ArrowFlightStatement extends AvaticaStatement implements ArrowFligh
       // to direct statement mode for executeQuery/executeUpdate.
       ((ArrowFlightPreparedStatement) existingStatement).closePreparedResources();
     }
+    closeServerPreparedQuery();
     connection.statementMap.put(handle.id, this);
   }
 }
