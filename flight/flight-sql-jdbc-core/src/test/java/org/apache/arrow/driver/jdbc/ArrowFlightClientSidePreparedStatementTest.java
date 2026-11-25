@@ -59,6 +59,7 @@ import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
@@ -1109,6 +1110,45 @@ public class ArrowFlightClientSidePreparedStatementTest {
       assertEquals(0, statement.getUpdateCount());
     }
     assertNotPreparedOnServer();
+  }
+
+  @Test
+  public void testUpdateCountTheServerDoesNotKnowIsZero() throws Exception {
+    // Servers such as Apache Doris answer -1 to DDL, which Avatica takes for a result set.
+    PRODUCER.addUpdateQuery("CREATE TABLE t60 (a INTEGER)", -1);
+    for (final Map<String, Object> properties :
+        List.of(ALL_CLIENT_SIDE, Map.<String, Object>of())) {
+      try (final Connection connection = FLIGHT_SERVER_TEST_EXTENSION.getConnection(properties);
+          final PreparedStatement ps = prepare(connection, "CREATE TABLE t60 (a INTEGER)")) {
+        assertEquals(0, ps.executeUpdate());
+      }
+    }
+    try (final Connection connection = FLIGHT_SERVER_TEST_EXTENSION.getConnection(ALL_CLIENT_SIDE);
+        final Statement statement = connection.createStatement()) {
+      assertEquals(0, statement.executeUpdate("CREATE TABLE t60 (a INTEGER)"));
+    }
+  }
+
+  @Test
+  public void testBatchCountTheServerDoesNotKnowIsZero() throws Exception {
+    PRODUCER.addUpdateQuery("INSERT INTO t61 VALUES (1)", -1);
+    PRODUCER.addUpdateQuery("INSERT INTO t61 VALUES (2)", -1);
+    try (final Connection connection = FLIGHT_SERVER_TEST_EXTENSION.getConnection(ALL_CLIENT_SIDE);
+        final PreparedStatement ps = prepare(connection, "INSERT INTO t61 VALUES (?)")) {
+      ps.setInt(1, 1);
+      ps.addBatch();
+      ps.setInt(1, 2);
+      ps.addBatch();
+      assertArrayEquals(new int[] {0, 0}, ps.executeBatch());
+    }
+    try (final Connection connection = FLIGHT_SERVER_TEST_EXTENSION.getConnection(Map.of());
+        final PreparedStatement ps = prepare(connection, "INSERT INTO t61 VALUES (1)")) {
+      ps.addBatch();
+      ps.addBatch();
+      for (final int count : ps.executeBatch()) {
+        assertEquals(0, count);
+      }
+    }
   }
 
   @Test
