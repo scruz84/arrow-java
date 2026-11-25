@@ -73,6 +73,15 @@ public interface SqlDialect {
   }
 
   /**
+   * Tells whether the server only executes a statement when its results are fetched, so an update
+   * has to be sent as a query and its stream read to the end. The default is {@code false}: updates
+   * go through the update endpoints.
+   */
+  default boolean updatesAsQueries() {
+    return false;
+  }
+
+  /**
    * Builds the statement sent to the server to learn the result set metadata of a query before it
    * runs. The default replaces every marker with {@code NULL}.
    */

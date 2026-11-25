@@ -21,11 +21,14 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.util.ArrayList;
 import java.util.List;
 import org.apache.arrow.driver.jdbc.client.ArrowFlightSqlClientHandler;
+import org.apache.arrow.driver.jdbc.client.CloseableEndpointStreamPair;
 import org.apache.arrow.driver.jdbc.dialect.ScannedSql;
 import org.apache.arrow.driver.jdbc.dialect.SqlDialect;
 import org.apache.arrow.driver.jdbc.dialect.StatementKind;
 import org.apache.arrow.driver.jdbc.dialect.value.SqlValue;
+import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.FlightInfo;
+import org.apache.arrow.util.AutoCloseables;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.calcite.avatica.Meta.StatementType;
@@ -187,6 +190,9 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
 
   @Override
   public long executeUpdate() {
+    if (dialect.updatesAsQueries()) {
+      return executeUpdateAsQuery();
+    }
     if (scanned.parameterCount() == 0) {
       return parameterlessHandle().executeUpdate();
     }
@@ -196,6 +202,33 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
       return prepared.executeUpdate();
     } finally {
       closeQuietly(prepared);
+    }
+  }
+
+  /**
+   * Runs an update through the query endpoints and reads the stream to its end, for servers that
+   * only execute a statement when its results are fetched. The count is not known.
+   */
+  private long executeUpdateAsQuery() {
+    try {
+      final FlightInfo info = executeQuery();
+      final List<CloseableEndpointStreamPair> streams = handler.getStreams(info);
+      try {
+        for (final CloseableEndpointStreamPair pair : streams) {
+          while (pair.getStream().next()) {
+            // Nothing to keep: the statement does not return rows.
+          }
+        }
+      } finally {
+        AutoCloseables.close(streams);
+      }
+      return 0;
+    } catch (final RuntimeException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw CallStatus.INTERNAL.withDescription(e.getMessage()).withCause(e).toRuntimeException();
+    } finally {
+      closeQueryHandle();
     }
   }
 

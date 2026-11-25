@@ -34,12 +34,15 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import org.apache.arrow.driver.jdbc.client.ArrowFlightSqlClientHandler;
+import org.apache.arrow.driver.jdbc.client.CloseableEndpointStreamPair;
 import org.apache.arrow.driver.jdbc.dialect.AnsiSqlDialect;
+import org.apache.arrow.driver.jdbc.dialect.DorisSqlDialect;
 import org.apache.arrow.driver.jdbc.dialect.ScannedSql;
 import org.apache.arrow.driver.jdbc.dialect.SqlDialect;
 import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.FlightDescriptor;
 import org.apache.arrow.flight.FlightInfo;
+import org.apache.arrow.flight.FlightStream;
 import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -305,6 +308,26 @@ public class ClientSidePreparedStatementTest {
     verify(handler, times(1)).prepare("select id from t");
     verify(prepared, never()).close();
     statement.close();
+    verify(prepared).close();
+  }
+
+  @Test
+  public void testUpdateOfADialectThatNeedsQueriesRunsAsAQuery() throws Exception {
+    final ArrowFlightSqlClientHandler.PreparedStatement prepared =
+        mock(ArrowFlightSqlClientHandler.PreparedStatement.class);
+    final FlightStream stream = mock(FlightStream.class);
+    when(stream.next()).thenReturn(true, false);
+    when(handler.prepare("insert into t values (1, 2)")).thenReturn(prepared);
+    when(prepared.executeQuery()).thenReturn(FLIGHT_INFO);
+    when(handler.getStreams(FLIGHT_INFO))
+        .thenReturn(List.of(new CloseableEndpointStreamPair(stream, null)));
+    final ClientSidePreparedStatement statement =
+        ClientSidePreparedStatement.create(handler, new DorisSqlDialect(), UPDATE, true);
+    statement.bind(values(1, 2));
+    assertEquals(0L, statement.executeUpdate());
+    verify(stream, times(2)).next();
+    verify(stream).close();
+    verify(prepared, never()).executeUpdate();
     verify(prepared).close();
   }
 }

@@ -188,7 +188,7 @@ case-sensitive. The supported parameters are:
      - ansi
      - The name of the SQL dialect used to write parameter values into the
        SQL text. Only used for client-side statements. The built-in dialects
-       are ``ansi`` and ``denodo``. See :ref:`flight-sql-jdbc-dialects`.
+       are ``ansi``, ``denodo`` and ``doris``. See :ref:`flight-sql-jdbc-dialects`.
 
    * - dialectClass
      - null
@@ -418,6 +418,18 @@ Built-in dialects
 
 ``ansi`` (the default)
   Writes the literals of the table above.
+
+``doris``
+  For Apache Doris.  The values are written as ANSI SQL.  Backticks delimit
+  identifiers and a backslash escapes the next character in a string, so the
+  driver doubles the backslashes it writes.  Doris only runs a statement when
+  the results of a query are fetched: a statement that arrives through an
+  update endpoint is accepted and then ignored, so a ``CREATE TABLE`` or an
+  ``INSERT`` would silently do nothing.  With this dialect the driver sends
+  the statements of a client-side ``PreparedStatement``, or of a ``Statement``
+  with ``disableServerPreparedStatements=true``, through the query endpoints
+  and reads the stream to the end.  The update count is not known, so
+  ``executeUpdate`` returns 0.
 
 ``denodo``
   For Denodo Virtual DataPort.  The values are written as ANSI SQL, except
