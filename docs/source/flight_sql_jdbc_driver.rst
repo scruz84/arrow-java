@@ -188,7 +188,7 @@ case-sensitive. The supported parameters are:
      - ansi
      - The name of the SQL dialect used to write parameter values into the
        SQL text. Only used for client-side statements. The built-in dialects
-       are ``ansi`` and ``denodo``. See :ref:`flight-sql-jdbc-dialects`.
+       are ``ansi``, ``denodo`` and ``doris``. See :ref:`flight-sql-jdbc-dialects`.
 
    * - dialectClass
      - null
@@ -319,6 +319,44 @@ Built-in dialects
 
 ``ansi`` (the default)
   Writes ANSI SQL literals.
+
+``doris``
+  For Apache Doris.  The values are written as ANSI SQL.  Backticks delimit
+  identifiers and a backslash escapes the next character in a string, so the
+  driver doubles the backslashes it writes.
+
+  Doris does not read some ANSI literals, so the driver writes these values
+  differently:
+
+  .. list-table::
+     :header-rows: 1
+
+     * - Java value
+       - ``doris``
+     * - ``String`` set with ``setNString``
+       - ``'...'``.  There is no ``N'...'`` form.
+     * - ``java.sql.Time``, ``LocalTime``
+       - ``'10:15:30'``, a string, as Doris has no time type.  An
+         ``OffsetTime`` is rejected.
+     * - ``OffsetDateTime``, ``ZonedDateTime``, ``Instant``
+       - ``CAST('2024-01-31 10:15:30+02:00' AS DATETIME(6))``, which Doris
+         converts to the time zone of the session.  A ``DATETIME`` has no
+         time zone and at most microseconds.
+     * - ``Timestamp``, ``LocalDateTime``
+       - ``TIMESTAMP '2024-01-31 10:15:30.123456789'``, the wall clock time in
+         the default time zone of the JVM.  Doris rounds it to the precision
+         of the column.
+     * - ``byte[]``
+       - ``UNHEX('0A1B')``
+     * - ``NaN``, ``Infinity``
+       - ``CAST('NaN' AS DOUBLE)``, ``CAST('-Infinity' AS DOUBLE)``
+     * - Java arrays, collections
+       - ``ARRAY(1, 2)``
+     * - ``java.sql.Struct``, ``SQLData``
+       - ``STRUCT(1, 'a')``
+     * - ``Period``, ``Duration``
+       - ``INTERVAL 14 MONTH`` or ``INTERVAL 90061 SECOND``.  Doris has no
+         compound intervals.
 
 ``denodo``
   For Denodo Virtual DataPort.  The values are written as ANSI SQL, except
