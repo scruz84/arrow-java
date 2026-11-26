@@ -1152,6 +1152,20 @@ public class ArrowFlightClientSidePreparedStatementTest {
   }
 
   @Test
+  public void testObjectWithAScaleKeepsItsValue() throws Exception {
+    addQuery("SELECT id FROM t70 WHERE a = 3.14 AND b = 5", 70);
+    try (final Connection connection = FLIGHT_SERVER_TEST_EXTENSION.getConnection(ALL_CLIENT_SIDE);
+        final PreparedStatement ps =
+            prepare(connection, "SELECT id FROM t70 WHERE a = ? AND b = ?")) {
+      ps.setObject(1, new BigDecimal("3.14159"), Types.DECIMAL, 2);
+      ps.setObject(2, 5, Types.INTEGER, 2);
+      try (final ResultSet rs = ps.executeQuery()) {
+        assertSingleRow(rs, 70);
+      }
+    }
+  }
+
+  @Test
   public void testQueriesOnlyModeAppliesToPlainStatements() throws Exception {
     addQuery("SELECT id FROM t35", 35);
     PRODUCER.addUpdateQuery("UPDATE t35 SET a = 1", 2);

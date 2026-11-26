@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.sql.Blob;
@@ -145,6 +146,14 @@ public class ArrowFlightPreparedStatement extends AvaticaPreparedStatement
     return !isNativeToAvatica(x) || SqlValueFactory.isDateTimeType(targetSqlType);
   }
 
+  private static boolean isDecimalType(final int sqlType) {
+    return sqlType == Types.DECIMAL || sqlType == Types.NUMERIC;
+  }
+
+  private static boolean isNumeric(final Object x) {
+    return x instanceof Number || x instanceof String;
+  }
+
   private void setValue(final int parameterIndex, final SqlValue value) throws SQLException {
     getSite(parameterIndex); // checks the statement is open and the index is valid
     slots[parameterIndex - 1] = TypedValue.ofLocal(Rep.OBJECT, value);
@@ -227,8 +236,17 @@ public class ArrowFlightPreparedStatement extends AvaticaPreparedStatement
   public void setObject(
       final int parameterIndex, final Object x, final int targetSqlType, final int scaleOrLength)
       throws SQLException {
-    if (isClientSide() && x != null && isConvertedByDriver(x, targetSqlType)) {
+    if (isClientSide() && x != null && isDecimalType(targetSqlType) && isNumeric(x)) {
+      // Avatica drops the value when it has a scale, so the scale is applied here.
+      final BigDecimal decimal = x instanceof BigDecimal d ? d : new BigDecimal(x.toString());
+      setValue(
+          parameterIndex,
+          SqlValueFactory.fromJava(decimal.setScale(scaleOrLength, RoundingMode.HALF_UP)));
+    } else if (isClientSide() && x != null && isConvertedByDriver(x, targetSqlType)) {
       setValue(parameterIndex, SqlValueFactory.fromJava(x, targetSqlType));
+    } else if (isClientSide() && x != null) {
+      // The scale or length only matters for decimals and streams.
+      setObject(parameterIndex, x, targetSqlType);
     } else {
       super.setObject(parameterIndex, x, targetSqlType, scaleOrLength);
     }
