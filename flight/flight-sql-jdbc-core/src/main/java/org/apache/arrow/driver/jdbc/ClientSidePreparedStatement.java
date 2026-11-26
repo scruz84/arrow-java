@@ -21,11 +21,14 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.util.ArrayList;
 import java.util.List;
 import org.apache.arrow.driver.jdbc.client.ArrowFlightSqlClientHandler;
+import org.apache.arrow.driver.jdbc.client.CloseableEndpointStreamPair;
 import org.apache.arrow.driver.jdbc.dialect.ScannedSql;
 import org.apache.arrow.driver.jdbc.dialect.SqlDialect;
 import org.apache.arrow.driver.jdbc.dialect.StatementKind;
 import org.apache.arrow.driver.jdbc.dialect.value.SqlValue;
+import org.apache.arrow.flight.CallStatus;
 import org.apache.arrow.flight.FlightInfo;
+import org.apache.arrow.util.AutoCloseables;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.apache.calcite.avatica.Meta.StatementType;
@@ -187,15 +190,43 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
 
   @Override
   public long executeUpdate() {
-    if (scanned.parameterCount() == 0) {
-      return parameterlessHandle().executeUpdate();
-    }
+    final boolean reusable = scanned.parameterCount() == 0;
     // The statement text changes with the parameters, so a handle serves one execution only.
-    final ArrowFlightSqlClientHandler.PreparedStatement prepared = handler.prepare(renderedSql);
+    final ArrowFlightSqlClientHandler.PreparedStatement prepared =
+        reusable ? parameterlessHandle() : handler.prepare(renderedSql);
     try {
+      if (prepared.getType() == StatementType.SELECT) {
+        // The server describes the statement with a result set, as some servers do for every
+        // statement, and only executes it when the results are fetched. Follow it, as the
+        // server-side prepared statements do.
+        return drain(prepared);
+      }
       return prepared.executeUpdate();
     } finally {
-      closeQuietly(prepared);
+      if (!reusable) {
+        closeQuietly(prepared);
+      }
+    }
+  }
+
+  /** Runs the statement through the query endpoints and reads its stream to the end. */
+  private long drain(final ArrowFlightSqlClientHandler.PreparedStatement prepared) {
+    try {
+      final List<CloseableEndpointStreamPair> streams = handler.getStreams(prepared.executeQuery());
+      try {
+        for (final CloseableEndpointStreamPair pair : streams) {
+          while (pair.getStream().next()) {
+            // Nothing to keep: the statement is not run for its rows.
+          }
+        }
+      } finally {
+        AutoCloseables.close(streams);
+      }
+      return 0;
+    } catch (final RuntimeException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw CallStatus.INTERNAL.withDescription(e.getMessage()).withCause(e).toRuntimeException();
     }
   }
 
