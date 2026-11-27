@@ -289,7 +289,8 @@ Limitations
   row.
 * Streams and LOBs are read when set, and are limited to 16 MiB.
 * ``{fn ...}`` and ``{call ...}`` escapes are not translated.
-* ``executeBatch`` runs one statement per row of parameters.
+* ``executeBatch`` runs one statement per row of parameters, unless the
+  dialect groups the rows of an ``INSERT`` (see ``groupsBatchInserts()``).
 * The ``backslashEscapesInStrings`` rule of a dialect applies to every string
   literal.  A prefix that turns backslash escapes on for a single literal,
   such as ``E'...'`` in PostgreSQL, is not recognized when looking for
@@ -324,6 +325,13 @@ Built-in dialects
   For Apache Doris.  The values are written as ANSI SQL.  Backticks delimit
   identifiers and a backslash escapes the next character in a string, so the
   driver doubles the backslashes it writes.
+
+  The rows of an ``executeBatch`` of an ``INSERT ... VALUES (...)`` are sent
+  as one ``INSERT ... VALUES (...), (...)`` with all the rows added with
+  ``addBatch``, so the application chooses how many rows go in one statement.  Doris does not report how many rows it
+  wrote, so each row has the update count
+  ``Statement.SUCCESS_NO_INFO``.  A statement with anything after its row,
+  such as a clause, runs row by row.
 
   Doris does not read some ANSI literals, so the driver writes these values
   differently:
@@ -455,7 +463,10 @@ Values reach the dialect as a small typed model in
 objects.  ``render(SqlValue)`` is the entry point, and arrays and rows render
 their elements through it, so an override applies at every level.  A
 dialect can also override ``classify(String)`` to decide what is a query and
-``metadataProbeSql(ScannedSql)`` to change the metadata probe.
+``metadataProbeSql(ScannedSql)`` to change the metadata probe.  It can
+also override ``groupsBatchInserts()`` to let the driver send the rows of a
+batch as one ``INSERT ... VALUES (...), (...)``; the default is ``false``, which
+sends each row as a statement of its own.
 
 ``lexicalRules()`` also tells the driver which constructs can hide a ``?``:
 backslash escapes, ``$tag$`` quoting, nested block comments, backtick or

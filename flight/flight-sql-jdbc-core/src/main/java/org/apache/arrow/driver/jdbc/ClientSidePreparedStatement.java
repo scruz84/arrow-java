@@ -18,8 +18,12 @@ package org.apache.arrow.driver.jdbc;
 
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.apache.arrow.driver.jdbc.client.ArrowFlightSqlClientHandler;
 import org.apache.arrow.driver.jdbc.client.CloseableEndpointStreamPair;
 import org.apache.arrow.driver.jdbc.dialect.ScannedSql;
@@ -47,6 +51,7 @@ import org.slf4j.LoggerFactory;
  */
 final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.PreparedStatement {
   private static final Logger LOGGER = LoggerFactory.getLogger(ClientSidePreparedStatement.class);
+
   private static final Schema NO_COLUMNS = new Schema(List.of());
 
   private final ArrowFlightSqlClientHandler handler;
@@ -121,6 +126,10 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
    * @throws IllegalArgumentException if a value is not valid.
    */
   void bind(List<TypedValue> values) {
+    renderedSql = scanned.join(renderLiterals(values));
+  }
+
+  private List<String> renderLiterals(List<TypedValue> values) {
     if (values.size() != scanned.parameterCount()) {
       throw new IllegalStateException(
           String.format(
@@ -138,7 +147,130 @@ final class ClientSidePreparedStatement implements ArrowFlightSqlClientHandler.P
     } catch (SQLException e) {
       throw new IllegalArgumentException(e.getMessage(), e);
     }
-    renderedSql = scanned.join(literals);
+    return literals;
+  }
+
+  /**
+   * Runs the statement once for each row of parameters.
+   *
+   * <p>By default every row is a statement of its own. If the dialect allows it (see {@link
+   * SqlDialect#groupsBatchInserts()}) and the statement is an {@code INSERT ... VALUES (...)}, all
+   * the rows are sent as one {@code INSERT ... VALUES (...), (...)}, which saves a round trip per
+   * row. The caller decides how many rows that is. The server then answers for the whole statement:
+   * when its count is the number of rows each of them counts 1, and otherwise each is {@link
+   * Statement#SUCCESS_NO_INFO}.
+   *
+   * @param rows the parameter values of each row.
+   * @return the update count of each row.
+   */
+  long[] executeBatch(List<List<TypedValue>> rows) {
+    final long[] counts = new long[rows.size()];
+    final InsertValues insert =
+        dialect.groupsBatchInserts() && rows.size() > 1 ? InsertValues.of(scanned) : null;
+    if (insert == null) {
+      for (int i = 0; i < counts.length; i++) {
+        bind(rows.get(i));
+        counts[i] = executeUpdate();
+      }
+      return counts;
+    }
+    final StringBuilder sql = new StringBuilder(insert.head());
+    for (int i = 0; i < counts.length; i++) {
+      if (i > 0) {
+        sql.append(", ");
+      }
+      sql.append(insert.tuple().join(renderLiterals(rows.get(i))));
+    }
+    renderedSql = sql.toString();
+    final long total = executeUpdate();
+    Arrays.fill(counts, total == counts.length ? 1 : Statement.SUCCESS_NO_INFO);
+    return counts;
+  }
+
+  /**
+   * An {@code INSERT ... VALUES (...)} split into what comes before its row and the row.
+   *
+   * @param head the text up to the opening parenthesis of the row.
+   * @param tuple the row, from its opening parenthesis to its closing one.
+   */
+  private record InsertValues(String head, ScannedSql tuple) {
+    private static final Pattern INSERT =
+        Pattern.compile("^\\s*insert\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern VALUES =
+        Pattern.compile("\\bvalues\\s*\\(", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Finds the row of an {@code INSERT ... VALUES (...)} that has a single row and nothing after
+     * it. Anything it does not understand, such as comments, backslashes, double quotes or
+     * backticks in the row, is not grouped.
+     *
+     * @return the parts, or {@code null} if the statement is not of that form.
+     */
+    static @Nullable InsertValues of(ScannedSql scanned) {
+      if (scanned.parameterCount() == 0) {
+        return null;
+      }
+      final List<String> segments = scanned.segments();
+      final String first = segments.get(0);
+      if (!INSERT.matcher(first).find()) {
+        return null;
+      }
+      int open = -1;
+      final Matcher matcher = VALUES.matcher(first);
+      while (matcher.find()) {
+        open = matcher.end() - 1;
+      }
+      if (open < 0) {
+        return null;
+      }
+      final List<String> tuple = new ArrayList<>(segments);
+      tuple.set(0, first.substring(open));
+      String last = tuple.get(tuple.size() - 1).stripTrailing();
+      while (last.endsWith(";")) {
+        last = last.substring(0, last.length() - 1).stripTrailing();
+      }
+      tuple.set(tuple.size() - 1, last);
+      if (!isOneRow(tuple)) {
+        return null;
+      }
+      return new InsertValues(first.substring(0, open), new ScannedSql(tuple));
+    }
+
+    /** Tells whether the text is one parenthesis that closes at its very end. */
+    private static boolean isOneRow(List<String> segments) {
+      int depth = 0;
+      boolean inString = false;
+      for (int s = 0; s < segments.size(); s++) {
+        final String text = segments.get(s);
+        for (int i = 0; i < text.length(); i++) {
+          final char c = text.charAt(i);
+          if (c == '\'') {
+            inString = !inString;
+          } else if (inString) {
+            continue;
+          } else if (c == '\\' || c == '"' || c == '`' || c == '#') {
+            return false;
+          } else if ((c == '-' || c == '/' || c == '*') && i + 1 < text.length()) {
+            final char d = text.charAt(i + 1);
+            if ((c == '-' && d == '-') || (c == '/' && d == '*')) {
+              return false;
+            }
+          } else if (c == '(') {
+            depth++;
+          } else if (c == ')') {
+            depth--;
+            final boolean atEnd = s == segments.size() - 1 && i == text.length() - 1;
+            if (depth == 0 && !atEnd) {
+              return false;
+            }
+          }
+        }
+        if (inString) {
+          return false;
+        }
+      }
+      return depth == 0 && !inString;
+    }
   }
 
   /**

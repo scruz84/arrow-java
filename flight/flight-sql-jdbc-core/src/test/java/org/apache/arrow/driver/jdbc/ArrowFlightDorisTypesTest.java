@@ -48,6 +48,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 
 /**
@@ -581,6 +582,41 @@ public class ArrowFlightDorisTypesTest {
       }
     }
     return tests;
+  }
+
+  @Test
+  public void batchOfInsertsIsGroupedAndWritesEveryRow() throws Exception {
+    assumeTrue(URL != null, "Set -Ddoris.flight.url to run against Apache Doris");
+    final int rows = 2500;
+    try (Connection connection = open();
+        Statement st = connection.createStatement()) {
+      st.execute("DELETE FROM " + TABLE + " WHERE id >= 100000");
+      try (PreparedStatement ps =
+          connection.prepareStatement(
+              "INSERT INTO " + TABLE + " (id, i4, v100, dtm) VALUES (?, ?, ?, ?)")) {
+        for (int i = 0; i < rows; i++) {
+          ps.setInt(1, 100000 + i);
+          ps.setInt(2, i);
+          ps.setString(3, "it's (" + i + ") \\ ?");
+          ps.setObject(4, LocalDateTime.of(2024, 1, 31, 10, 15, 30, 123456000));
+          ps.addBatch();
+        }
+        final int[] counts = ps.executeBatch();
+        assertEquals(rows, counts.length);
+      }
+      try (ResultSet rs =
+          st.executeQuery(
+              "SELECT COUNT(*), SUM(i4), MIN(v100), COUNT(DISTINCT CAST(dtm AS STRING)) FROM "
+                  + TABLE
+                  + " WHERE id >= 100000")) {
+        rs.next();
+        assertEquals(rows, rs.getLong(1));
+        assertEquals((long) rows * (rows - 1) / 2, rs.getLong(2));
+        assertEquals("it's (0) \\ ?", rs.getString(3));
+        assertEquals(1, rs.getLong(4));
+      }
+      st.execute("DELETE FROM " + TABLE + " WHERE id >= 100000");
+    }
   }
 
   @TestFactory

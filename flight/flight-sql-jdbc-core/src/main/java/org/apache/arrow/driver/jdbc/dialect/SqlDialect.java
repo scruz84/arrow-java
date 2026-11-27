@@ -65,6 +65,16 @@ public interface SqlDialect {
   }
 
   /**
+   * Tells whether the rows of a batch of an {@code INSERT} with parameters can be sent as one
+   * {@code INSERT ... VALUES (...), (...)}, with one row for each {@code addBatch}. The default is
+   * {@code false}: every row is a statement of its own, which every database accepts. The client
+   * decides how many rows a batch has, so the driver never splits it.
+   */
+  default boolean groupsBatchInserts() {
+    return false;
+  }
+
+  /**
    * Tells whether a statement returns a result set, without asking the server. The default looks at
    * the first keyword; a dialect overrides this for constructs such as data-modifying {@code WITH}.
    */

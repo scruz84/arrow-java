@@ -61,6 +61,11 @@ public class DorisSqlDialect implements SqlDialect {
   }
 
   @Override
+  public boolean groupsBatchInserts() {
+    return true;
+  }
+
+  @Override
   public SqlLexicalRules lexicalRules() {
     return LEXICAL_RULES;
   }

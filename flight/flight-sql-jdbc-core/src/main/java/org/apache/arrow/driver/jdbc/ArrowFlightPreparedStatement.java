@@ -643,13 +643,9 @@ public class ArrowFlightPreparedStatement extends AvaticaPreparedStatement
     Preconditions.checkArgument(
         connection.id.equals(statementHandle.connectionId), "Connection IDs are not consistent");
     if (preparedStatement instanceof ClientSidePreparedStatement) {
-      // Each row of parameters becomes its own statement, so each has its own update count.
-      final long[] counts = new long[parameterValuesList.size()];
-      for (int i = 0; i < counts.length; i++) {
-        ((ClientSidePreparedStatement) preparedStatement).bind(parameterValuesList.get(i));
-        counts[i] = preparedStatement.executeUpdate();
-      }
-      return new ExecuteBatchResult(counts);
+      // The rows run as statements of their own, or grouped if the dialect allows it.
+      return new ExecuteBatchResult(
+          ((ClientSidePreparedStatement) preparedStatement).executeBatch(parameterValuesList));
     }
     final AvaticaParameterBinder binder =
         new AvaticaParameterBinder(

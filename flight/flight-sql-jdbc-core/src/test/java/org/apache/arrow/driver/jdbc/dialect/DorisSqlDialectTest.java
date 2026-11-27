@@ -17,7 +17,9 @@
 package org.apache.arrow.driver.jdbc.dialect;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
@@ -49,6 +51,12 @@ public class DorisSqlDialectTest {
     final ScannedSql scanned =
         ScannedSql.scan("select `a?` from t where b = ?", dialect.lexicalRules());
     assertEquals(1, scanned.parameterCount());
+  }
+
+  @Test
+  public void testInsertsOfABatchAreGrouped() {
+    assertTrue(dialect.groupsBatchInserts());
+    assertFalse(new AnsiSqlDialect().groupsBatchInserts());
   }
 
   @Test

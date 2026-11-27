@@ -16,6 +16,7 @@
  */
 package org.apache.arrow.driver.jdbc;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -30,6 +31,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -329,5 +331,88 @@ public class ClientSidePreparedStatementTest {
     verify(stream).close();
     verify(prepared, never()).executeUpdate();
     verify(prepared).close();
+  }
+
+  private ClientSidePreparedStatement createGrouping(final String sql) {
+    final SqlDialect grouping =
+        new AnsiSqlDialect() {
+          @Override
+          public boolean groupsBatchInserts() {
+            return true;
+          }
+        };
+    return ClientSidePreparedStatement.create(handler, grouping, sql, true);
+  }
+
+  @Test
+  public void testBatchWithoutGroupingRunsEachRow() {
+    when(prepares("insert into t values (1, 2)").executeUpdate()).thenReturn(1L);
+    when(prepares("insert into t values (3, 4)").executeUpdate()).thenReturn(1L);
+    assertArrayEquals(
+        new long[] {1L, 1L}, create(UPDATE).executeBatch(List.of(values(1, 2), values(3, 4))));
+  }
+
+  @Test
+  public void testBatchSendsAllItsRowsAsOneInsert() {
+    final ArrowFlightSqlClientHandler.PreparedStatement prepared =
+        prepares("insert into t values (1, 'a'), (2, 'b'), (3, 'c')");
+    when(prepared.executeUpdate()).thenReturn(3L);
+    assertArrayEquals(
+        new long[] {1L, 1L, 1L},
+        createGrouping(UPDATE)
+            .executeBatch(List.of(values(1, "a"), values(2, "b"), values(3, "c"))));
+    verify(handler, times(1)).prepare(anyString());
+  }
+
+  @Test
+  public void testBatchGroupWithAnUnknownCountReportsNoInfo() {
+    when(prepares("insert into t values (1, 2), (3, 4)").executeUpdate()).thenReturn(0L);
+    assertArrayEquals(
+        new long[] {Statement.SUCCESS_NO_INFO, Statement.SUCCESS_NO_INFO},
+        createGrouping(UPDATE).executeBatch(List.of(values(1, 2), values(3, 4))));
+  }
+
+  @Test
+  public void testBatchOnlyGroupsASingleRowInsert() {
+    for (final String sql :
+        List.of(
+            "insert into t values (?, ?) on duplicate key update a = 1",
+            "insert into t values (?, ?), (7, 8)",
+            "insert into t select ?, ?",
+            "insert into t values (?, ?) -- a comment",
+            "update t set a = ?, b = ?")) {
+      final ArrowFlightSqlClientHandler handler = mock(ArrowFlightSqlClientHandler.class);
+      final String first = sql.replaceFirst("\\?", "1").replaceFirst("\\?", "2");
+      final String second = sql.replaceFirst("\\?", "3").replaceFirst("\\?", "4");
+      for (final String rendered : List.of(first, second)) {
+        final ArrowFlightSqlClientHandler.PreparedStatement prepared =
+            mock(ArrowFlightSqlClientHandler.PreparedStatement.class);
+        when(handler.prepare(rendered)).thenReturn(prepared);
+        when(prepared.executeUpdate()).thenReturn(1L);
+      }
+      final SqlDialect grouping =
+          new AnsiSqlDialect() {
+            @Override
+            public boolean groupsBatchInserts() {
+              return true;
+            }
+          };
+      final ClientSidePreparedStatement statement =
+          ClientSidePreparedStatement.create(handler, grouping, sql, true);
+      assertArrayEquals(
+          new long[] {1L, 1L}, statement.executeBatch(List.of(values(1, 2), values(3, 4))), sql);
+      verify(handler).prepare(first);
+      verify(handler).prepare(second);
+    }
+  }
+
+  @Test
+  public void testBatchGroupsRowsWithParenthesesAndQuotesInTheText() {
+    when(prepares("insert into t values (1, 'a''(b)'), (2, 'a''(b)')").executeUpdate())
+        .thenReturn(2L);
+    assertArrayEquals(
+        new long[] {1L, 1L},
+        createGrouping("insert into t values (?, 'a''(b)');")
+            .executeBatch(List.of(values(1), values(2))));
   }
 }
